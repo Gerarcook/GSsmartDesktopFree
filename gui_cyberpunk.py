@@ -7,19 +7,20 @@ Funciones:
 - Chat con burbujas flotantes (operador / IA / sistema) y marcas de tiempo
 - Respuestas reales en streaming a través de ProviderRouter (src/core/router.py)
 - Modo demo automático si no hay proveedores configurados
-- Panel de telemetría en vivo (latencia, tokens, CPU/MEM si psutil está instalado)
+- Panel de telemetría en vivo (latencia, palabras, CPU/MEM si psutil está instalado)
 - Enter envía, Shift+Enter inserta salto de línea
+- Botón COPIAR en cada mensaje
 
 Ejecutar: python gui_cyberpunk.py
 """
 
 import asyncio
 import queue
-import random
 import threading
 import time
 import tkinter as tk
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
+from urllib.parse import urlsplit
 
 import customtkinter as ctk
 
@@ -62,6 +63,22 @@ DEMO_PROVIDER = "DEMO"
 SYSTEM_PROMPT = "Sos GSsmart, un asistente útil. Respondé de forma clara y concisa."
 MAX_HISTORY_MESSAGES = 20
 UI_POLL_MS = 30
+STREAM_FLUSH_MS = 80
+SHUTDOWN_TIMEOUT_S = 1.0
+
+
+def safe_endpoint(url: Optional[str]) -> str:
+    """Muestra solo esquema://host[:puerto]/ruta, sin credenciales ni query."""
+    if not url:
+        return "-"
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "-"
+    if not parts.hostname:
+        return "-"
+    host = parts.hostname + (f":{parts.port}" if parts.port else "")
+    return f"{parts.scheme}://{host}{parts.path}"
 
 
 # ============================================================
@@ -153,6 +170,14 @@ class MessageBubble(ctk.CTkFrame):
         ctk.CTkLabel(
             meta, text=time.strftime("  //  %H:%M:%S"), font=(FONT, 9), text_color=COLORS["text_dim"]
         ).pack(side="left")
+        if sender != "system":
+            self.copy_btn = ctk.CTkButton(
+                meta, text="COPIAR", width=56, height=18, font=(FONT, 8, "bold"),
+                fg_color="transparent", hover_color=COLORS["cyan_dim"], text_color=COLORS["text_muted"],
+                border_width=1, border_color=COLORS["text_dim"], corner_radius=4,
+                command=self._copy,
+            )
+            self.copy_btn.pack(side="right", padx=(12, 0))
 
         self.text_label = ctk.CTkLabel(
             self,
@@ -176,6 +201,18 @@ class MessageBubble(ctk.CTkFrame):
 
     def set_wraplength(self, value: int) -> None:
         self.text_label.configure(wraplength=value)
+
+    def _copy(self) -> None:
+        if not self.text.strip():
+            return
+        self.clipboard_clear()
+        self.clipboard_append(self.text)
+        self.copy_btn.configure(text="COPIADO", text_color=COLORS["green"])
+        self.after(1200, self._reset_copy_label)
+
+    def _reset_copy_label(self) -> None:
+        if self.winfo_exists():
+            self.copy_btn.configure(text="COPIAR", text_color=COLORS["text_muted"])
 
 
 # ============================================================
@@ -207,8 +244,11 @@ class CyberpunkHUD(ctk.CTk):
         self._ui_queue: "queue.Queue[tuple]" = queue.Queue()
         self._current_future = None
         self._router_error: Optional[str] = None
-        self.token_count = 0
+        self.word_count = 0
         self.last_latency_ms: Optional[int] = None
+        self._after_ids: Dict[str, str] = {}
+        self._pending_chunks: Dict[MessageBubble, List[str]] = {}
+        self._flush_scheduled = False
         self._scan_x = 0
         self._blink = False
         self._thinking_step = 0
@@ -255,7 +295,20 @@ class CyberpunkHUD(ctk.CTk):
                 fn(*args)
         except queue.Empty:
             pass
-        self.after(UI_POLL_MS, self._drain_ui_queue)
+        self._schedule("drain", UI_POLL_MS, self._drain_ui_queue)
+
+    def _schedule(self, name: str, ms: int, fn: Callable[[], None]) -> None:
+        """after() con id guardado para poder cancelarlo al cerrar."""
+        if not self._closing:
+            self._after_ids[name] = self.after(ms, fn)
+
+    def _cancel_scheduled(self) -> None:
+        for after_id in self._after_ids.values():
+            try:
+                self.after_cancel(after_id)
+            except tk.TclError:
+                pass
+        self._after_ids.clear()
 
     # ------------------------------------------------------------
     # BACKEND
@@ -278,7 +331,7 @@ class CyberpunkHUD(ctk.CTk):
         if name == DEMO_PROVIDER or not self.router:
             return {"model": "simulador-local", "endpoint": "offline"}
         prov = self.router.get(name)
-        return {"model": prov.model or "auto", "endpoint": prov.base_url or "-"}
+        return {"model": prov.model or "auto", "endpoint": safe_endpoint(prov.base_url)}
 
     # ------------------------------------------------------------
     # FONDO
@@ -303,7 +356,7 @@ class CyberpunkHUD(ctk.CTk):
             c.create_line(x, y, x + dx * size, y, fill=COLORS["cyan"], width=2)
             c.create_line(x, y, x, y + dy * size, fill=COLORS["cyan"], width=2)
 
-        c.create_text(40, h - 10, text="LAT -34.9011 / LON -56.1645", fill=COLORS["text_dim"],
+        c.create_text(40, h - 10, text="SECTOR // LOCAL", fill=COLORS["text_dim"],
                       font=(FONT, 8), anchor="w")
         c.create_text(w - 40, h - 10, text="GSSMART // BUILD 2.0", fill=COLORS["text_dim"],
                       font=(FONT, 8), anchor="e")
@@ -448,7 +501,7 @@ class CyberpunkHUD(ctk.CTk):
         self.metric_bars: Dict[str, ctk.CTkProgressBar] = {}
         for i, key in enumerate(["CPU", "MEM"]):
             self._metric_row(body, i, key, with_bar=True)
-        for i, key in enumerate(["LATENCIA", "TOKENS", "MENSAJES"], start=2):
+        for i, key in enumerate(["LATENCIA", "PALABRAS", "MENSAJES"], start=2):
             self._metric_row(body, i, key, with_bar=False)
 
         ctk.CTkLabel(body, text="◢ REGISTRO", font=(FONT, 10, "bold"),
@@ -496,6 +549,7 @@ class CyberpunkHUD(ctk.CTk):
         )
         self.input_box.grid(row=0, column=1, sticky="ew", pady=8)
         self.input_box.bind("<Return>", self._on_enter)
+        self.input_box.bind("<KP_Enter>", self._on_enter)
 
         actions = ctk.CTkFrame(panel, fg_color="transparent")
         actions.grid(row=0, column=2, padx=(6, 12), pady=10)
@@ -522,7 +576,7 @@ class CyberpunkHUD(ctk.CTk):
         seg = max(60, w // 6)
         self._scan_x = (self._scan_x + 6) % (w + seg)
         c.create_line(self._scan_x - seg, 2, self._scan_x, 2, fill=COLORS["cyan"], width=2)
-        self.after(30, self._animate_scan)
+        self._schedule("scan", 30, self._animate_scan)
 
     def _animate_status(self) -> None:
         self._blink = not self._blink
@@ -536,26 +590,27 @@ class CyberpunkHUD(ctk.CTk):
             self.thinking_label.configure(text=f"{self.current_provider} decodificando señal {bars}")
         else:
             self.thinking_label.configure(text="")
-        self.after(450, self._animate_status)
+        self._schedule("status", 450, self._animate_status)
 
     def _update_telemetry(self) -> None:
         if psutil:
             cpu = psutil.cpu_percent(interval=None)
             mem = psutil.virtual_memory().percent
+            for key, value in (("CPU", cpu), ("MEM", mem)):
+                self.metric_labels[key].configure(
+                    text=f"{value:.0f}%", text_color=COLORS["magenta"] if value > 80 else COLORS["cyan"]
+                )
+                self.metric_bars[key].set(min(value / 100, 1))
         else:
-            cpu = random.uniform(8, 28) + (35 if self.is_generating else 0)
-            mem = random.uniform(40, 48)
-        for key, value in (("CPU", cpu), ("MEM", mem)):
-            self.metric_labels[key].configure(
-                text=f"{value:.0f}%", text_color=COLORS["magenta"] if value > 80 else COLORS["cyan"]
-            )
-            self.metric_bars[key].set(min(value / 100, 1))
+            for key in ("CPU", "MEM"):
+                self.metric_labels[key].configure(text="N/D", text_color=COLORS["text_dim"])
+                self.metric_bars[key].set(0)
 
         latency = f"{self.last_latency_ms} ms" if self.last_latency_ms is not None else "--"
         self.metric_labels["LATENCIA"].configure(text=latency)
-        self.metric_labels["TOKENS"].configure(text=str(self.token_count))
+        self.metric_labels["PALABRAS"].configure(text=str(self.word_count))
         self.metric_labels["MENSAJES"].configure(text=str(len(self.messages)))
-        self.after(1500, self._update_telemetry)
+        self._schedule("telemetry", 1500, self._update_telemetry)
 
     # ------------------------------------------------------------
     # INTERACCIÓN
@@ -563,6 +618,8 @@ class CyberpunkHUD(ctk.CTk):
 
     def _boot_sequence(self) -> None:
         self._log("Núcleo iniciado")
+        if not psutil:
+            self._log("CPU/MEM no disponibles: instalá psutil")
         if self.provider_names:
             self._log(f"Proveedores: {', '.join(self.provider_names)}")
             self._add_message("system", f"Enlace establecido con {len(self.provider_names)} proveedor(es). Listo para recibir comandos.")
@@ -647,11 +704,7 @@ class CyberpunkHUD(ctk.CTk):
                     first_chunk = False
                 self._post(self._append_chunk, bubble, chunk)
             if first_chunk:
-                text = await self.router.generate(
-                    prompt, provider=provider, system_prompt=SYSTEM_PROMPT, history=history
-                )
                 self._post(self._set_latency, started)
-                self._post(self._append_chunk, bubble, text)
             self._post(self._finish_generation, bubble, None)
         except asyncio.CancelledError:
             raise
@@ -675,23 +728,47 @@ class CyberpunkHUD(ctk.CTk):
         self.last_latency_ms = int((time.perf_counter() - started) * 1000)
 
     def _append_chunk(self, bubble: MessageBubble, chunk: str) -> None:
-        bubble.append(chunk)
-        self.token_count += max(1, len(chunk.split()))
-        self._scroll_to_bottom()
+        """Acumula pedazos y los vuelca cada STREAM_FLUSH_MS para no redibujar por token."""
+        self._pending_chunks.setdefault(bubble, []).append(chunk)
+        if not self._flush_scheduled:
+            self._flush_scheduled = True
+            self._schedule("flush", STREAM_FLUSH_MS, self._flush_chunks)
+
+    def _flush_chunks(self) -> None:
+        self._flush_scheduled = False
+        if not self._pending_chunks:
+            return
+        follow = self._is_near_bottom()
+        for bubble, chunks in self._pending_chunks.items():
+            if bubble.winfo_exists():
+                bubble.append("".join(chunks))
+        self._pending_chunks.clear()
+        if follow:
+            self._scroll_to_bottom()
 
     def _finish_generation(self, bubble: MessageBubble, error: Optional[str]) -> None:
+        self._flush_chunks()
+        partial = bubble.text.strip()
         if error:
-            if not bubble.text.strip():
+            if partial:
+                bubble.set_text(partial + " [interrumpida]")
+                self._record_ai(bubble.text)
+            else:
                 bubble.destroy()
                 self.bubbles.remove(bubble)
             self._add_message("error", f"Fallo de enlace con {self.current_provider}: {error}")
             self._log("Error en la transmisión")
         else:
-            bubble.set_text(bubble.text.strip() or "(respuesta vacía)")
-            self.messages.append({"sender": "ai", "text": bubble.text, "time": time.time()})
+            bubble.set_text(partial or "(respuesta vacía)")
+            if partial:
+                self._record_ai(bubble.text)
             self._log("Respuesta recibida")
         self._current_future = None
         self._set_generating(False)
+
+    def _record_ai(self, text: str) -> None:
+        self.messages.append({"sender": "ai", "text": text, "time": time.time()})
+        self.word_count += len(text.split())
 
     def _set_generating(self, value: bool) -> None:
         self.is_generating = value
@@ -708,7 +785,7 @@ class CyberpunkHUD(ctk.CTk):
             bubble.destroy()
         self.bubbles.clear()
         self.messages.clear()
-        self.token_count = 0
+        self.word_count = 0
         self.last_latency_ms = None
         self._log("Sesión reiniciada")
         self._add_message("system", "Nueva sesión iniciada.")
@@ -732,9 +809,12 @@ class CyberpunkHUD(ctk.CTk):
         self._scroll_to_bottom()
         return bubble
 
+    def _is_near_bottom(self) -> bool:
+        return self.chat_area._parent_canvas.yview()[1] >= 0.98
+
     def _scroll_to_bottom(self) -> None:
-        self.chat_area.update_idletasks()
-        self.chat_area._parent_canvas.yview_moveto(1.0)
+        # after_idle espera a que el layout se recalcule sin forzar un redibujado completo.
+        self.after_idle(lambda: self.chat_area._parent_canvas.yview_moveto(1.0))
 
     def _log(self, text: str) -> None:
         self.log_box.configure(state="normal")
@@ -746,22 +826,24 @@ class CyberpunkHUD(ctk.CTk):
         if self._closing:
             return
         self._closing = True
+        self._cancel_scheduled()
+        self.withdraw()
 
         future = self._current_future
         if future is not None and not future.done():
             future.cancel()
             try:
-                future.result(timeout=2)
+                future.result(timeout=SHUTDOWN_TIMEOUT_S)
             except BaseException:
                 pass
 
         if self.router:
             try:
-                self.runner.submit(self.router.close_all()).result(timeout=2)
+                self.runner.submit(self.router.close_all()).result(timeout=SHUTDOWN_TIMEOUT_S)
             except Exception:
                 pass
         self.runner.stop()
-        self.runner.thread.join(timeout=2)
+        self.runner.thread.join(timeout=SHUTDOWN_TIMEOUT_S)
         self.destroy()
 
 
