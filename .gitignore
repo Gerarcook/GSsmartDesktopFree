@@ -1,0 +1,11 @@
+# Entorno y dependencias
+venv/
+__pycache__/
+*.pyc
+
+# Claves y secretos
+.env
+
+# Caché
+*.log
+.DS_Store
