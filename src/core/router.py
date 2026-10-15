@@ -90,6 +90,8 @@ class ProviderRouter:
         **kwargs: Any,
     ) -> AsyncIterator[str]:
         """Igual que generate pero con streaming (va devolviendo texto por partes)."""
+        if not provider and not self.providers:
+            raise RuntimeError("No hay proveedores configurados.")
         name = provider or self.providers[0]
         prov = self.get(name)
         async for chunk in prov.generate_stream(prompt, system_prompt=system_prompt, **kwargs):

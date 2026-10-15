@@ -14,6 +14,7 @@ Ejecutar: python gui_cyberpunk.py
 """
 
 import asyncio
+import queue
 import random
 import threading
 import time
@@ -59,6 +60,8 @@ COLORS = {
 FONT = "Consolas"
 DEMO_PROVIDER = "DEMO"
 SYSTEM_PROMPT = "Sos GSsmart, un asistente útil. Respondé de forma clara y concisa."
+MAX_HISTORY_MESSAGES = 20
+UI_POLL_MS = 30
 
 
 # ============================================================
@@ -200,6 +203,10 @@ class CyberpunkHUD(ctk.CTk):
         self.bubbles: List[MessageBubble] = []
         self.messages: List[Dict] = []
         self.is_generating = False
+        self._closing = False
+        self._ui_queue: "queue.Queue[tuple]" = queue.Queue()
+        self._current_future = None
+        self._router_error: Optional[str] = None
         self.token_count = 0
         self.last_latency_ms: Optional[int] = None
         self._scan_x = 0
@@ -222,8 +229,33 @@ class CyberpunkHUD(ctk.CTk):
         self._animate_scan()
         self._animate_status()
         self._update_telemetry()
+        self._drain_ui_queue()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ------------------------------------------------------------
+    # PUENTE HILO DE FONDO -> HILO DE TKINTER
+    # ------------------------------------------------------------
+
+    def _post(self, fn, *args) -> None:
+        """Llamable desde cualquier hilo: encola una actualización de la UI.
+
+        Tkinter no es thread-safe, así que el hilo asyncio nunca toca widgets;
+        solo deja tareas en la cola que el hilo principal procesa en _drain_ui_queue.
+        """
+        if not self._closing:
+            self._ui_queue.put((fn, args))
+
+    def _drain_ui_queue(self) -> None:
+        if self._closing:
+            return
+        try:
+            while True:
+                fn, args = self._ui_queue.get_nowait()
+                fn(*args)
+        except queue.Empty:
+            pass
+        self.after(UI_POLL_MS, self._drain_ui_queue)
 
     # ------------------------------------------------------------
     # BACKEND
@@ -231,6 +263,7 @@ class CyberpunkHUD(ctk.CTk):
 
     def _init_router(self) -> None:
         if ProviderRouter is None:
+            self._router_error = ROUTER_IMPORT_ERROR
             return
         try:
             self.router = ProviderRouter()
@@ -375,7 +408,7 @@ class CyberpunkHUD(ctk.CTk):
     # ------------------------------------------------------------
 
     def _create_chat(self) -> None:
-        panel = NeonPanel(self.root_frame, "Canal de conversación", tag="SECURE // E2E")
+        panel = NeonPanel(self.root_frame, "Canal de conversación", tag="STREAM // LIVE")
         panel.grid(row=1, column=1, sticky="nsew")
         panel.body.grid_rowconfigure(0, weight=1)
 
@@ -533,6 +566,14 @@ class CyberpunkHUD(ctk.CTk):
         if self.provider_names:
             self._log(f"Proveedores: {', '.join(self.provider_names)}")
             self._add_message("system", f"Enlace establecido con {len(self.provider_names)} proveedor(es). Listo para recibir comandos.")
+        elif self._router_error:
+            self._log("Error al iniciar el router: modo demo")
+            self._add_message(
+                "error",
+                f"No se pudo iniciar el router de proveedores: {self._router_error}. "
+                "Modo demo activo: las respuestas son simuladas.",
+                record=False,
+            )
         else:
             self._log("Sin proveedores: modo demo")
             self._add_message("system", "No se detectaron proveedores en .env. Modo demo activo: las respuestas son simuladas.")
@@ -568,49 +609,67 @@ class CyberpunkHUD(ctk.CTk):
             return
         self.input_box.delete("1.0", "end")
 
+        history = self._build_history()
         self._add_message("user", prompt)
         bubble = self._add_message("ai", "")
         self._set_generating(True)
         self._log(f"Transmitiendo a {self.current_provider}")
 
         started = time.perf_counter()
-        if self.router and self.current_provider != DEMO_PROVIDER:
-            self.runner.submit(self._stream_real(prompt, bubble, started))
+        provider = self.current_provider
+        if self.router and provider != DEMO_PROVIDER:
+            coro = self._stream_real(prompt, history, provider, bubble, started)
         else:
-            self.runner.submit(self._stream_demo(prompt, bubble, started))
+            coro = self._stream_demo(prompt, bubble, started)
+        self._current_future = self.runner.submit(coro)
 
-    async def _stream_real(self, prompt: str, bubble: MessageBubble, started: float) -> None:
+    def _build_history(self) -> List[Dict[str, str]]:
+        """Últimos N turnos de la conversación en formato OpenAI (sin errores ni avisos)."""
+        roles = {"user": "user", "ai": "assistant"}
+        history = [
+            {"role": roles[m["sender"]], "content": m["text"]}
+            for m in self.messages
+            if m["sender"] in roles and m["text"].strip()
+        ]
+        return history[-MAX_HISTORY_MESSAGES:]
+
+    async def _stream_real(
+        self, prompt: str, history: List[Dict[str, str]], provider: str,
+        bubble: MessageBubble, started: float,
+    ) -> None:
         first_chunk = True
         try:
             async for chunk in self.router.generate_stream(
-                prompt, provider=self.current_provider, system_prompt=SYSTEM_PROMPT
+                prompt, provider=provider, system_prompt=SYSTEM_PROMPT, history=history
             ):
                 if first_chunk:
-                    self.after(0, self._set_latency, started)
+                    self._post(self._set_latency, started)
                     first_chunk = False
-                self.after(0, self._append_chunk, bubble, chunk)
+                self._post(self._append_chunk, bubble, chunk)
             if first_chunk:
                 text = await self.router.generate(
-                    prompt, provider=self.current_provider, system_prompt=SYSTEM_PROMPT
+                    prompt, provider=provider, system_prompt=SYSTEM_PROMPT, history=history
                 )
-                self.after(0, self._set_latency, started)
-                self.after(0, self._append_chunk, bubble, text)
-            self.after(0, self._finish_generation, bubble, None)
+                self._post(self._set_latency, started)
+                self._post(self._append_chunk, bubble, text)
+            self._post(self._finish_generation, bubble, None)
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
-            self.after(0, self._finish_generation, bubble, str(e))
+            self._post(self._finish_generation, bubble, str(e))
 
     async def _stream_demo(self, prompt: str, bubble: MessageBubble, started: float) -> None:
         await asyncio.sleep(0.6)
-        self.after(0, self._set_latency, started)
+        self._post(self._set_latency, started)
         reply = (
             f"Señal recibida: \"{prompt[:80]}\". Estoy funcionando en modo demo. "
             "Configurá un proveedor en tu archivo .env (OmniRoute, OpenRouter o uno personalizado) "
             "para obtener respuestas reales en streaming."
         )
         for word in reply.split(" "):
-            self.after(0, self._append_chunk, bubble, word + " ")
+            self._post(self._append_chunk, bubble, word + " ")
             await asyncio.sleep(0.04)
-        self.after(0, self._finish_generation, bubble, None)
+        self._post(self._finish_generation, bubble, None)
 
     def _set_latency(self, started: float) -> None:
         self.last_latency_ms = int((time.perf_counter() - started) * 1000)
@@ -631,6 +690,7 @@ class CyberpunkHUD(ctk.CTk):
             bubble.set_text(bubble.text.strip() or "(respuesta vacía)")
             self.messages.append({"sender": "ai", "text": bubble.text, "time": time.time()})
             self._log("Respuesta recibida")
+        self._current_future = None
         self._set_generating(False)
 
     def _set_generating(self, value: bool) -> None:
@@ -657,7 +717,7 @@ class CyberpunkHUD(ctk.CTk):
     # MENSAJES Y LOG
     # ------------------------------------------------------------
 
-    def _add_message(self, sender: str, text: str) -> MessageBubble:
+    def _add_message(self, sender: str, text: str, record: bool = True) -> MessageBubble:
         wrap = self._bubble_wraplength()
         bubble = MessageBubble(self.chat_area, sender, text, wrap if sender != "system" else wrap + 80)
         if bubble.align == "e":
@@ -667,7 +727,7 @@ class CyberpunkHUD(ctk.CTk):
         else:
             bubble.grid(row=len(self.bubbles), column=0, pady=6)
         self.bubbles.append(bubble)
-        if sender in ("user", "error"):
+        if record and sender in ("user", "error"):
             self.messages.append({"sender": sender, "text": text, "time": time.time()})
         self._scroll_to_bottom()
         return bubble
@@ -683,12 +743,25 @@ class CyberpunkHUD(ctk.CTk):
         self.log_box.configure(state="disabled")
 
     def _on_close(self) -> None:
+        if self._closing:
+            return
+        self._closing = True
+
+        future = self._current_future
+        if future is not None and not future.done():
+            future.cancel()
+            try:
+                future.result(timeout=2)
+            except BaseException:
+                pass
+
         if self.router:
             try:
                 self.runner.submit(self.router.close_all()).result(timeout=2)
             except Exception:
                 pass
         self.runner.stop()
+        self.runner.thread.join(timeout=2)
         self.destroy()
 
 
