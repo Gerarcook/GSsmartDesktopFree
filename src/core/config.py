@@ -23,13 +23,11 @@ from src.providers.custom_provider import CustomProvider
 # para que importe las variables aunque la app se corra desde otra carpeta.
 _ROOT = Path(__file__).resolve().parent.parent.parent
 load_dotenv(_ROOT / ".env", override=False)
-# DEBUG
-import os as _os
-print(f"[DEBUG] _ROOT = {_ROOT}")
-print(f"[DEBUG] .env existe = {(_ROOT / '.env').exists()}")
-print(f"[DEBUG] OMNIROUTE_BASE_URL = {_os.getenv('OMNIROUTE_BASE_URL')}")
-print(f"[DEBUG] OMNIROUTE_API_KEY = {_os.getenv('OMNIROUTE_API_KEY')}")
-print(f"[DEBUG] OPENAI_BASE_URL = {_os.getenv('OPENAI_BASE_URL')}")
+
+# NOTA: no logueamos nada aqui a proposito. Este modulo se importa en cada
+# arranque y cualquier print queda en consola, logs y capturas de pantalla.
+# Para diagnosticar credenciales usar debug_key.py / debug_config.py, que
+# enmascaran los valores.
 
 
 # ------------------------------------------------------------------

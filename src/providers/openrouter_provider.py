@@ -6,10 +6,9 @@ tambien sirve como referencia para cualquier otro proveedor
 compatible con OpenAI (vLLM, Groq, Together, etc).
 """
 
-import json
-from typing import Any, AsyncIterator, List
+from typing import Any, AsyncIterator, Dict, List, Optional
 
-from .base_provider import BaseProvider
+from .base_provider import BaseProvider, parse_stream_line
 
 
 class OpenRouterProvider(BaseProvider):
@@ -25,20 +24,26 @@ class OpenRouterProvider(BaseProvider):
         return resp.json()
 
     # ------------------------------------------------------------------
-    async def generate(self, prompt: str, system_prompt: str = "You are a helpful assistant.", **kwargs: Any) -> str:
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-        ]
+    async def generate(
+        self,
+        prompt: str,
+        system_prompt: str = "You are a helpful assistant.",
+        history: Optional[List[Dict[str, str]]] = None,
+        **kwargs: Any,
+    ) -> str:
+        messages = self.build_messages(prompt, system_prompt, history)
         data = await self._post(messages, **kwargs)
         return data["choices"][0]["message"]["content"]
 
     # ------------------------------------------------------------------
-    async def generate_stream(self, prompt: str, system_prompt: str = "You are a helpful assistant.", **kwargs: Any) -> AsyncIterator[str]:
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-        ]
+    async def generate_stream(
+        self,
+        prompt: str,
+        system_prompt: str = "You are a helpful assistant.",
+        history: Optional[List[Dict[str, str]]] = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[str]:
+        messages = self.build_messages(prompt, system_prompt, history)
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -48,18 +53,11 @@ class OpenRouterProvider(BaseProvider):
         async with self.client.stream("POST", f"{self.base_url}/chat/completions", headers=headers, json=payload) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                chunk = line[5:].strip()
-                if chunk == "[DONE]":
+                piece = parse_stream_line(line)
+                if piece is None:  # [DONE] -> fin del stream
                     break
-                try:
-                    data = json.loads(chunk)
-                    delta = data["choices"][0]["delta"].get("content")
-                    if delta:
-                        yield delta
-                except (json.JSONDecodeError, KeyError, IndexError):
-                    continue
+                if piece:
+                    yield piece
 
     # ------------------------------------------------------------------
     async def get_available_models(self) -> List[str]:

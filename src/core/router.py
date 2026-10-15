@@ -48,38 +48,71 @@ class ProviderRouter:
         return self._instances[name]
 
     # ------------------------------------------------------------------
+    @staticmethod
+    def _compose_prompt(prompt: str, file_context: Optional[str]) -> str:
+        """Pega el contexto de adjuntos delante del prompt del usuario.
+
+        Se hace ACA y no en el payload porque los endpoints OpenAI-compatible
+        no aceptan un campo "files": solo leen `messages`. El contenido tiene
+        que viajar dentro del mensaje para que el modelo lo vea.
+        """
+        if not file_context:
+            return prompt
+        return f"{file_context}\n\nPREGUNTA DEL USUARIO:\n{prompt}"
+
+    # ------------------------------------------------------------------
     async def generate(
         self,
         prompt: str,
         provider: Optional[str] = None,
         system_prompt: str = "You are a helpful assistant.",
         fallback: bool = True,
+        file_context: Optional[str] = None,
         **kwargs: Any,
     ) -> str:
         """
-        Envia el prompt. Si provider es None, prueba con todos
-        los proveedores hasta que uno responda (fallback automatico).
+        Devuelve la respuesta completa como string.
+
+        IMPORTANTE: no hace una llamada no-streaming. Reutiliza generate_stream()
+        y junta los trozos. Motivo (medido contra OmniRoute, oct-2026):
+
+            no-streaming  -> 504 en el 100% de los intentos (~33s)
+            streaming     -> 200 con contenido real en el 100% (5-23s)
+
+        Los gateways con cola de rate-limit (maxWaitMs) cortan la respuesta
+        completa si no entra en la ventana. El streaming entrega el primer
+        chunk antes de que venza ese reloj, asi que esquiva el limite.
+
+        Por eso hay UN solo camino de codigo: si divergen, el fix se aplica
+        una vez y no queda un path viejo queSIGA dando 504.
         """
         targets = [provider] if provider else self.providers
-        last_error: Optional[Exception] = None
+        if not targets:
+            raise RuntimeError("No hay proveedores configurados.")
 
+        composed = self._compose_prompt(prompt, file_context)
+        last_error: Optional[Exception] = None
         for name in targets:
             try:
-                prov = self.get(name)
-                return await prov.generate(prompt, system_prompt=system_prompt, **kwargs)
+                chunks: List[str] = []
+                async for piece in self.generate_stream(
+                    composed, provider=name, system_prompt=system_prompt, **kwargs
+                ):
+                    chunks.append(piece)
+                text = "".join(chunks).strip()
+                if text:
+                    return text
+                # 200 sin contenido: el gateway respondio vacio. No es un exito.
+                last_error = RuntimeError(f"[{name}] respondio 200 pero sin contenido.")
+                print(f"[{name}] {last_error}")
             except Exception as e:
                 last_error = e
                 print(f"[{name}] fallo: {e}")
 
-        if fallback and not provider:
-            for name in self.providers:
-                try:
-                    prov = self.get(name)
-                    return await prov.generate(prompt, system_prompt=system_prompt, **kwargs)
-                except Exception as e:
-                    last_error = e
-
-        raise RuntimeError(f"Todos los proveedores fallaron. Ultimo error: {last_error}")
+        raise RuntimeError(
+            f"Todos los proveedores fallaron ({len(targets)} intentados). "
+            f"Ultimo error: {last_error}"
+        )
 
     # ------------------------------------------------------------------
     async def generate_stream(
@@ -87,12 +120,16 @@ class ProviderRouter:
         prompt: str,
         provider: Optional[str] = None,
         system_prompt: str = "You are a helpful assistant.",
+        file_context: Optional[str] = None,
         **kwargs: Any,
     ) -> AsyncIterator[str]:
         """Igual que generate pero con streaming (va devolviendo texto por partes)."""
+        if not provider and not self.providers:
+            raise RuntimeError("No hay proveedores configurados.")
         name = provider or self.providers[0]
         prov = self.get(name)
-        async for chunk in prov.generate_stream(prompt, system_prompt=system_prompt, **kwargs):
+        composed = self._compose_prompt(prompt, file_context)
+        async for chunk in prov.generate_stream(composed, system_prompt=system_prompt, **kwargs):
             yield chunk
 
     # ------------------------------------------------------------------
@@ -104,20 +141,61 @@ class ProviderRouter:
                 pass
 
 # ------------------------------------------------------------------
-# Helper sincrono para la GUI / scripts simples.
-# ProviderRouter.generate() es async, pero Tkinter necesita una funcion sync.
+# Helpers para la GUI.
+#
+# OJO con get_ai_response(): es SINCRONICO, o sea BLOQUEA el hilo principal
+# de Tkinter. Con la latencia real de estos gateways (5-23s medidos) eso
+# congela la ventana entera. Para una GUI usá `ask_async()` en un hilo, o
+# mejor, consumí `generate_stream()` que va mostrando el texto mientras llega.
 # ------------------------------------------------------------------
-_sync_router = ProviderRouter()
+def get_ai_response(
+    text: str,
+    provider: Optional[str] = None,
+    file_context: Optional[str] = None,
+    **kwargs: Any,
+) -> str:
+    """Envia el texto al router y devuelve la respuesta completa.
 
+    Solo para scripts/CLI. En una GUI bloquea el hilo principal: usá ask_async().
 
-def get_ai_response(text: str, provider: Optional[str] = None, **kwargs: Any) -> str:
-    """Envia el texto al router y devuelve la respuesta como string."""
+    file_context: texto ya construido con build_file_context(), NO rutas.
+    """
     try:
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
     except RuntimeError:
-        loop = None
+        pass
+    else:
+        raise RuntimeError(
+            "get_ai_response() es sync y no se puede llamar desde un async. "
+            "Usá ProviderRouter.generate() o ask_async()."
+        )
 
-    if loop and loop.is_running():
-        raise RuntimeError("No llames get_ai_response() desde un async. Usa ProviderRouter.generate().")
+    async def _run() -> str:
+        router = ProviderRouter()
+        try:
+            return await router.generate(
+                text, provider=provider, file_context=file_context, **kwargs
+            )
+        finally:
+            await router.close_all()
 
-    return asyncio.run(_sync_router.generate(text, provider=provider, **kwargs))
+    return asyncio.run(_run())
+
+
+async def ask_async(
+    text: str,
+    provider: Optional[str] = None,
+    file_context: Optional[str] = None,
+    **kwargs: Any,
+) -> str:
+    """Igual que get_ai_response() pero awaitable.
+
+    Para backends de GUI: await ask_async(...) desde el hilo de asyncio.
+    """
+    router = ProviderRouter()
+    try:
+        return await router.generate(
+            text, provider=provider, file_context=file_context, **kwargs
+        )
+    finally:
+        await router.close_all()
