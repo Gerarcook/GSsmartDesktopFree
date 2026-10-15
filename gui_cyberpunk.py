@@ -1,822 +1,698 @@
 """
-GSsmart Desktop - Interfaz HUD Ciberpunk
-=========================================
-Estilo: Futurista, neón cian, paneles flotantes, efecto de flotación
-Inspirado en: HUDs de videojuegos, interfaces sci-fi, ciberpunk
+GSsmart Desktop - Interfaz de chat HUD Ciberpunk
+================================================
+Estilo: futurista, neón cian, paneles flotantes con bordes luminosos.
 
-Requisitos:
-- customtkinter (ya instalado)
-- Pillow (ya instalado)
+Funciones:
+- Chat con burbujas flotantes (operador / IA / sistema) y marcas de tiempo
+- Respuestas reales en streaming a través de ProviderRouter (src/core/router.py)
+- Modo demo automático si no hay proveedores configurados
+- Panel de telemetría en vivo (latencia, tokens, CPU/MEM si psutil está instalado)
+- Enter envía, Shift+Enter inserta salto de línea
 
 Ejecutar: python gui_cyberpunk.py
 """
 
-import customtkinter as ctk
 import asyncio
+import random
 import threading
-from typing import Optional, List, Dict
-from PIL import Image, ImageDraw, ImageFont
-import math
 import time
+import tkinter as tk
+from typing import Dict, List, Optional
+
+import customtkinter as ctk
+
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
+try:
+    from src.core.router import ProviderRouter
+except Exception as import_error:
+    ProviderRouter = None
+    ROUTER_IMPORT_ERROR: Optional[str] = str(import_error)
+else:
+    ROUTER_IMPORT_ERROR = None
+
 
 # ============================================================
-# CONFIGURACIÓN DE COLORES Y ESTILO
+# PALETA Y TIPOGRAFÍA
 # ============================================================
 
-# Paleta de colores ciberpunk
 COLORS = {
-    "bg_dark": "#0D1117",           # Fondo principal oscuro
-    "bg_panel": "#161B22",          # Fondo de paneles
-    "bg_panel_transparent": "#161B2280",  # Panel semi-transparente
-    "neon_cyan": "#00FFFF",         # Cian neón principal
-    "neon_cyan_dim": "#008B8B",     # Cian atenuado
-    "neon_magenta": "#FF0055",      # Magenta para alertas
-    "neon_green": "#00FF7F",        # Verde neón para éxito
-    "text_primary": "#E6EDF3",      # Texto principal
-    "text_secondary": "#8B949E",    # Texto secundario
-    "text_dim": "#484F58",          # Texto atenuado
-    "border": "#30363D",            # Bordes estándar
-    "border_neon": "#00FFFF",       # Bordes neón
-    "grid": "#1F2937",              # Color de rejilla
-    "glow": "#00FFFF40",            # Efecto de resplandor
+    "bg": "#05070D",
+    "panel": "#0A111C",
+    "panel_raised": "#0E1726",
+    "cyan": "#00F0FF",
+    "cyan_mid": "#00A8B5",
+    "cyan_dim": "#0B3A44",
+    "magenta": "#FF2A6D",
+    "magenta_dim": "#3D0F22",
+    "green": "#05FFA1",
+    "text": "#E4F6F8",
+    "text_muted": "#7A8EA0",
+    "text_dim": "#3A4A5C",
+    "grid": "#0C1624",
 }
 
-# Configuración de la ventana
-WINDOW_WIDTH = 1200
-WINDOW_HEIGHT = 800
-PANEL_MARGIN = 20
-PANEL_PADDING = 15
+FONT = "Consolas"
+DEMO_PROVIDER = "DEMO"
+SYSTEM_PROMPT = "Sos GSsmart, un asistente útil. Respondé de forma clara y concisa."
+
 
 # ============================================================
-# CLASE PRINCIPAL DE LA APLICACIÓN
+# EJECUTOR ASYNC EN SEGUNDO PLANO
+# ============================================================
+
+class AsyncRunner:
+    """Mantiene un event loop en un hilo aparte para no bloquear Tkinter."""
+
+    def __init__(self) -> None:
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
+        self.thread.start()
+
+    def submit(self, coro):
+        return asyncio.run_coroutine_threadsafe(coro, self.loop)
+
+    def stop(self) -> None:
+        self.loop.call_soon_threadsafe(self.loop.stop)
+
+
+# ============================================================
+# COMPONENTES REUTILIZABLES
+# ============================================================
+
+class NeonPanel(ctk.CTkFrame):
+    """Panel flotante con borde neón que se ilumina al pasar el mouse."""
+
+    def __init__(self, master, title: str, tag: str = "", **kwargs):
+        super().__init__(
+            master,
+            fg_color=COLORS["panel"],
+            corner_radius=10,
+            border_width=1,
+            border_color=COLORS["cyan_dim"],
+            **kwargs,
+        )
+        self.grid_columnconfigure(0, weight=1)
+
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=14, pady=(10, 4))
+        header.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkFrame(header, width=3, height=14, fg_color=COLORS["cyan"], corner_radius=0).grid(
+            row=0, column=0, padx=(0, 8)
+        )
+        ctk.CTkLabel(
+            header, text=title.upper(), font=(FONT, 11, "bold"), text_color=COLORS["cyan"]
+        ).grid(row=0, column=1, sticky="w")
+        if tag:
+            ctk.CTkLabel(
+                header, text=tag, font=(FONT, 9), text_color=COLORS["text_dim"]
+            ).grid(row=0, column=2, sticky="e")
+
+        self.body = ctk.CTkFrame(self, fg_color="transparent")
+        self.body.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        self.body.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        self.bind("<Enter>", lambda _e: self.configure(border_color=COLORS["cyan_mid"]))
+        self.bind("<Leave>", lambda _e: self.configure(border_color=COLORS["cyan_dim"]))
+
+
+class MessageBubble(ctk.CTkFrame):
+    """Burbuja de mensaje flotante."""
+
+    STYLES = {
+        "user": ("OPERADOR", COLORS["cyan"], COLORS["panel_raised"], "e"),
+        "ai": ("GSSMART", COLORS["green"], COLORS["panel_raised"], "w"),
+        "system": ("SISTEMA", COLORS["text_muted"], COLORS["bg"], "center"),
+        "error": ("ERROR", COLORS["magenta"], COLORS["magenta_dim"], "w"),
+    }
+
+    def __init__(self, master, sender: str, text: str, wraplength: int):
+        label, accent, bg, self.align = self.STYLES.get(sender, self.STYLES["system"])
+        super().__init__(
+            master,
+            fg_color=bg,
+            corner_radius=10,
+            border_width=1,
+            border_color=accent if sender != "system" else COLORS["text_dim"],
+        )
+        self.sender = sender
+        self.grid_columnconfigure(0, weight=1)
+
+        meta = ctk.CTkFrame(self, fg_color="transparent")
+        meta.grid(row=0, column=0, sticky="ew", padx=12, pady=(8, 0))
+        ctk.CTkLabel(meta, text=f"◢ {label}", font=(FONT, 9, "bold"), text_color=accent).pack(side="left")
+        ctk.CTkLabel(
+            meta, text=time.strftime("  //  %H:%M:%S"), font=(FONT, 9), text_color=COLORS["text_dim"]
+        ).pack(side="left")
+
+        self.text_label = ctk.CTkLabel(
+            self,
+            text=text,
+            font=(FONT, 12 if sender != "system" else 10),
+            text_color=COLORS["text"] if sender != "system" else COLORS["text_muted"],
+            justify="left",
+            anchor="w",
+            wraplength=wraplength,
+        )
+        self.text_label.grid(row=1, column=0, sticky="w", padx=12, pady=(2, 10))
+        self.text = text
+
+    def append(self, chunk: str) -> None:
+        self.text += chunk
+        self.text_label.configure(text=self.text)
+
+    def set_text(self, text: str) -> None:
+        self.text = text
+        self.text_label.configure(text=text)
+
+    def set_wraplength(self, value: int) -> None:
+        self.text_label.configure(wraplength=value)
+
+
+# ============================================================
+# APLICACIÓN PRINCIPAL
 # ============================================================
 
 class CyberpunkHUD(ctk.CTk):
-    """
-    Interfaz principal estilo HUD ciberpunk.
-    """
-
     def __init__(self):
         super().__init__()
+        ctk.set_appearance_mode("dark")
 
-        # Configuración de la ventana
-        self.title("GSsmart Desktop - HUD")
-        self.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
-        self.minsize(900, 600)
-        self.configure(fg_color=COLORS["bg_dark"])
+        self.title("GSsmart Desktop // Neural Chat")
+        self.geometry("1240x800")
+        self.minsize(960, 620)
+        self.configure(fg_color=COLORS["bg"])
+        try:
+            self.attributes("-alpha", 0.97)
+        except tk.TclError:
+            pass
 
-        # Hacer la ventana transparente (efecto de flotación)
-        self.attributes("-alpha", 0.95)
-        self.attributes("-topmost", False)
-
-        # Estado interno
-        self.connected = False
-        self.current_provider = "OmniRoute"
+        self.runner = AsyncRunner()
+        self.router = None
+        self.provider_names: List[str] = []
+        self.current_provider: str = DEMO_PROVIDER
+        self.bubbles: List[MessageBubble] = []
         self.messages: List[Dict] = []
         self.is_generating = False
+        self.token_count = 0
+        self.last_latency_ms: Optional[int] = None
+        self._scan_x = 0
+        self._blink = False
+        self._thinking_step = 0
 
-        # Inicializar componentes
-        self._setup_layout()
-        self._create_background_grid()
-        self._create_header_panel()
-        self._create_provider_panel()
-        self._create_chat_panel()
-        self._create_status_panel()
-        self._create_input_panel()
-        self._create_decorative_elements()
+        self._init_router()
 
-        # Animaciones
-        self._animate_status_light()
-        self._animate_scan_line()
+        self._create_background()
+        self._create_layout()
+        self._create_header()
+        self._create_sidebar()
+        self._create_chat()
+        self._create_telemetry()
+        self._create_input()
 
-        # Mensaje inicial
-        self._add_message("system", "Sistema iniciado. Conectando a proveedores...")
-        self._add_message("system", "Proveedor OmniRoute detectado en localhost:20128")
-        self._add_message("system", "Listo para recibir comandos.")
+        self._select_provider(self.current_provider, log=False)
+        self._boot_sequence()
 
-    # ============================================================
-    # CONFIGURACIÓN DE LAYOUT
-    # ============================================================
+        self._animate_scan()
+        self._animate_status()
+        self._update_telemetry()
 
-    def _setup_layout(self):
-        """Configura la estructura general de la ventana."""
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ------------------------------------------------------------
+    # BACKEND
+    # ------------------------------------------------------------
+
+    def _init_router(self) -> None:
+        if ProviderRouter is None:
+            return
+        try:
+            self.router = ProviderRouter()
+            self.provider_names = list(self.router.providers)
+        except Exception as e:
+            self.router = None
+            self._router_error = str(e)
+        if self.provider_names:
+            self.current_provider = self.provider_names[0]
+
+    def _provider_details(self, name: str) -> Dict[str, str]:
+        if name == DEMO_PROVIDER or not self.router:
+            return {"model": "simulador-local", "endpoint": "offline"}
+        prov = self.router.get(name)
+        return {"model": prov.model or "auto", "endpoint": prov.base_url or "-"}
+
+    # ------------------------------------------------------------
+    # FONDO
+    # ------------------------------------------------------------
+
+    def _create_background(self) -> None:
+        self.bg_canvas = tk.Canvas(self, bg=COLORS["bg"], highlightthickness=0, bd=0)
+        self.bg_canvas.place(x=0, y=0, relwidth=1, relheight=1)
+        self.bg_canvas.bind("<Configure>", self._draw_background)
+
+    def _draw_background(self, event) -> None:
+        c = self.bg_canvas
+        c.delete("all")
+        w, h, step = event.width, event.height, 32
+        for x in range(0, w, step):
+            c.create_line(x, 0, x, h, fill=COLORS["grid"])
+        for y in range(0, h, step):
+            c.create_line(0, y, w, y, fill=COLORS["grid"])
+
+        size = 26
+        for (x, y, dx, dy) in [(6, 6, 1, 1), (w - 6, 6, -1, 1), (6, h - 6, 1, -1), (w - 6, h - 6, -1, -1)]:
+            c.create_line(x, y, x + dx * size, y, fill=COLORS["cyan"], width=2)
+            c.create_line(x, y, x, y + dy * size, fill=COLORS["cyan"], width=2)
+
+        c.create_text(40, h - 10, text="LAT -34.9011 / LON -56.1645", fill=COLORS["text_dim"],
+                      font=(FONT, 8), anchor="w")
+        c.create_text(w - 40, h - 10, text="GSSMART // BUILD 2.0", fill=COLORS["text_dim"],
+                      font=(FONT, 8), anchor="e")
+
+    # ------------------------------------------------------------
+    # LAYOUT
+    # ------------------------------------------------------------
+
+    def _create_layout(self) -> None:
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
 
-        # Frame principal con padding
-        main_frame = ctk.CTkFrame(self, fg_color="transparent")
-        main_frame.grid(row=0, column=0, sticky="nsew", padx=PANEL_MARGIN, pady=PANEL_MARGIN)
-        main_frame.grid_columnconfigure(0, weight=1)
-        main_frame.grid_rowconfigure(1, weight=1)
+        self.root_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.root_frame.grid(row=0, column=0, sticky="nsew", padx=22, pady=(20, 24))
+        self.root_frame.grid_columnconfigure(1, weight=1)
+        self.root_frame.grid_rowconfigure(1, weight=1)
 
-        # Guardar referencia
-        self.main_frame = main_frame
+    # ------------------------------------------------------------
+    # CABECERA
+    # ------------------------------------------------------------
 
-    # ============================================================
-    # FONDO CON REJILLA
-    # ============================================================
-
-    def _create_background_grid(self):
-        """Crea un fondo con rejilla sutil estilo HUD."""
-        # Canvas para la rejilla (usar tkinter.Canvas directamente)
-        import tkinter as tk
-        grid_canvas = tk.Canvas(
-            self,
-            width=WINDOW_WIDTH,
-            height=WINDOW_HEIGHT,
-            bg=COLORS["bg_dark"],
-            highlightthickness=0
-        )
-        grid_canvas.place(x=0, y=0, relwidth=1, relheight=1)
-
-        # Dibujar rejilla
-        grid_size = 40
-
-        # Líneas verticales
-        for x in range(0, WINDOW_WIDTH, grid_size):
-            grid_canvas.create_line(
-                x, 0, x, WINDOW_HEIGHT,
-                fill=COLORS["grid"],
-                width=1
-            )
-
-        # Líneas horizontales
-        for y in range(0, WINDOW_HEIGHT, grid_size):
-            grid_canvas.create_line(
-                0, y, WINDOW_WIDTH, y,
-                fill=COLORS["grid"],
-                width=1
-            )
-
-        # Coordenadas en las esquinas
-        grid_canvas.create_text(
-            10, 10,
-            text="GSsmart v1.0",
-            fill=COLORS["text_dim"],
-            font=("Consolas", 8)
-        )
-        grid_canvas.create_text(
-            WINDOW_WIDTH - 10, 10,
-            text=f"SYS:{int(time.time())}",
-            fill=COLORS["text_dim"],
-            font=("Consolas", 8),
-            anchor="ne"
-        )
-        grid_canvas.create_text(
-            10, WINDOW_HEIGHT - 10,
-            text="LAT: -34.9011 LON: -56.1645",
-            fill=COLORS["text_dim"],
-            font=("Consolas", 8)
-        )
-        grid_canvas.create_text(
-            WINDOW_WIDTH - 10, WINDOW_HEIGHT - 10,
-            text="STATUS: ONLINE",
-            fill=COLORS["neon_green"],
-            font=("Consolas", 8),
-            anchor="se"
-        )
-
-    # ============================================================
-    # PANEL DE CABECERA
-    # ============================================================
-
-    def _create_header_panel(self):
-        """Crea el panel superior con título y estado."""
+    def _create_header(self) -> None:
         header = ctk.CTkFrame(
-            self.main_frame,
-            fg_color=COLORS["bg_panel"],
-            corner_radius=8,
-            border_width=2,
-            border_color=COLORS["neon_cyan"]
+            self.root_frame, fg_color=COLORS["panel"], corner_radius=10,
+            border_width=1, border_color=COLORS["cyan_dim"], height=58,
         )
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        header.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 14))
         header.grid_columnconfigure(1, weight=1)
 
-        # Título con efecto neón
-        title_label = ctk.CTkLabel(
-            header,
-            text="◈ GSMART DESKTOP ◈",
-            font=("Consolas", 18, "bold"),
-            text_color=COLORS["neon_cyan"],
-            fg_color="transparent"
-        )
-        title_label.grid(row=0, column=0, padx=15, pady=10)
+        brand = ctk.CTkFrame(header, fg_color="transparent")
+        brand.grid(row=0, column=0, padx=18, pady=10, sticky="w")
+        ctk.CTkLabel(brand, text="◈ GSSMART", font=(FONT, 20, "bold"),
+                     text_color=COLORS["cyan"]).pack(side="left")
+        ctk.CTkLabel(brand, text="  NEURAL//CHAT", font=(FONT, 12),
+                     text_color=COLORS["text_muted"]).pack(side="left", pady=(4, 0))
 
-        # Subtítulo
-        subtitle_label = ctk.CTkLabel(
-            header,
-            text="MULTI-PROVIDER AI INTERFACE",
-            font=("Consolas", 10),
-            text_color=COLORS["text_secondary"],
-            fg_color="transparent"
-        )
-        subtitle_label.grid(row=0, column=1, padx=15, pady=10)
+        self.scan_canvas = tk.Canvas(header, height=4, bg=COLORS["panel"], highlightthickness=0, bd=0)
+        self.scan_canvas.grid(row=0, column=1, sticky="ew", padx=10)
 
-        # Indicador de estado
-        self.status_indicator = ctk.CTkLabel(
-            header,
-            text="● ONLINE",
-            font=("Consolas", 12, "bold"),
-            text_color=COLORS["neon_green"],
-            fg_color="transparent"
-        )
-        self.status_indicator.grid(row=0, column=2, padx=15, pady=10)
+        status = ctk.CTkFrame(header, fg_color=COLORS["bg"], corner_radius=6,
+                              border_width=1, border_color=COLORS["cyan_dim"])
+        status.grid(row=0, column=2, padx=18, pady=10, sticky="e")
+        self.status_dot = ctk.CTkLabel(status, text="●", font=(FONT, 12), text_color=COLORS["green"])
+        self.status_dot.pack(side="left", padx=(10, 4), pady=4)
+        self.status_text = ctk.CTkLabel(status, text="ENLACE ACTIVO", font=(FONT, 10, "bold"),
+                                        text_color=COLORS["text"])
+        self.status_text.pack(side="left", padx=(0, 10), pady=4)
 
-        # Línea decorativa
-        line = ctk.CTkFrame(
-            header,
-            height=2,
-            fg_color=COLORS["neon_cyan"],
-            corner_radius=0
-        )
-        line.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 5))
+    # ------------------------------------------------------------
+    # BARRA LATERAL: PROVEEDORES
+    # ------------------------------------------------------------
 
-    # ============================================================
-    # PANEL DE PROVEEDORES
-    # ============================================================
+    def _create_sidebar(self) -> None:
+        panel = NeonPanel(self.root_frame, "Proveedores", tag="NODE-01", width=230)
+        panel.grid(row=1, column=0, rowspan=2, sticky="nsw", padx=(0, 14))
+        panel.grid_propagate(False)
+        body = panel.body
 
-    def _create_provider_panel(self):
-        """Crea el panel lateral izquierdo con selección de proveedores."""
-        provider_panel = ctk.CTkFrame(
-            self.main_frame,
-            fg_color=COLORS["bg_panel"],
-            corner_radius=8,
-            border_width=2,
-            border_color=COLORS["neon_cyan"]
-        )
-        provider_panel.grid(row=1, column=0, sticky="ns", padx=(0, 10))
-        provider_panel.grid_columnconfigure(0, weight=1)
-
-        # Título del panel
-        title = ctk.CTkLabel(
-            provider_panel,
-            text="◈ PROVEEDORES ◈",
-            font=("Consolas", 12, "bold"),
-            text_color=COLORS["neon_cyan"],
-            fg_color="transparent"
-        )
-        title.grid(row=0, column=0, padx=10, pady=(10, 5))
-
-        # Lista de proveedores
-        providers = ["OmniRoute", "OpenAI", "OpenRouter", "Custom"]
-        self.provider_buttons = {}
-
-        for i, provider in enumerate(providers):
+        names = self.provider_names or [DEMO_PROVIDER]
+        self.provider_buttons: Dict[str, ctk.CTkButton] = {}
+        for i, name in enumerate(names):
             btn = ctk.CTkButton(
-                provider_panel,
-                text=f"  {provider}  ",
-                font=("Consolas", 11),
-                fg_color="transparent",
-                hover_color=COLORS["neon_cyan_dim"],
-                text_color=COLORS["text_primary"],
-                border_width=1,
-                border_color=COLORS["border"],
-                command=lambda p=provider: self._select_provider(p)
+                body, text=f"▸ {name}", anchor="w", font=(FONT, 11), height=34,
+                fg_color="transparent", hover_color=COLORS["cyan_dim"],
+                text_color=COLORS["text"], border_width=1, border_color=COLORS["text_dim"],
+                corner_radius=6, command=lambda n=name: self._select_provider(n),
             )
-            btn.grid(row=i+1, column=0, sticky="ew", padx=10, pady=3)
-            self.provider_buttons[provider] = btn
+            btn.grid(row=i, column=0, sticky="ew", pady=3)
+            self.provider_buttons[name] = btn
 
-        # Botón de conectar
-        self.connect_btn = ctk.CTkButton(
-            provider_panel,
-            text="◈ CONECTAR ◈",
-            font=("Consolas", 12, "bold"),
-            fg_color=COLORS["neon_cyan_dim"],
-            hover_color=COLORS["neon_cyan"],
-            text_color=COLORS["bg_dark"],
-            border_width=2,
-            border_color=COLORS["neon_cyan"],
-            command=self._toggle_connection
-        )
-        self.connect_btn.grid(row=len(providers)+2, column=0, sticky="ew", padx=10, pady=(10, 10))
+        info = ctk.CTkFrame(body, fg_color=COLORS["bg"], corner_radius=6,
+                            border_width=1, border_color=COLORS["text_dim"])
+        info.grid(row=len(names), column=0, sticky="ew", pady=(14, 0))
+        info.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(info, text="MODELO", font=(FONT, 8, "bold"),
+                     text_color=COLORS["text_dim"]).grid(row=0, column=0, sticky="w", padx=10, pady=(8, 0))
+        self.model_label = ctk.CTkLabel(info, text="-", font=(FONT, 10), text_color=COLORS["cyan"],
+                                        anchor="w", justify="left", wraplength=180)
+        self.model_label.grid(row=1, column=0, sticky="w", padx=10)
+        ctk.CTkLabel(info, text="ENDPOINT", font=(FONT, 8, "bold"),
+                     text_color=COLORS["text_dim"]).grid(row=2, column=0, sticky="w", padx=10, pady=(6, 0))
+        self.endpoint_label = ctk.CTkLabel(info, text="-", font=(FONT, 9), text_color=COLORS["text_muted"],
+                                           anchor="w", justify="left", wraplength=180)
+        self.endpoint_label.grid(row=3, column=0, sticky="w", padx=10, pady=(0, 8))
 
-        # Información del proveedor actual
-        self.provider_info = ctk.CTkLabel(
-            provider_panel,
-            text="Proveedor: OmniRoute\nModelo: auto/coding:free\nEstado: Desconectado",
-            font=("Consolas", 9),
-            text_color=COLORS["text_secondary"],
-            fg_color=COLORS["bg_dark"],
-            corner_radius=4,
-            justify="left",
-            anchor="w"
-        )
-        self.provider_info.grid(row=len(providers)+3, column=0, sticky="ew", padx=10, pady=(0, 10))
+        if not self.provider_names:
+            hint = "Sin proveedores en .env\nModo demo activo."
+            if ROUTER_IMPORT_ERROR:
+                hint = "Router no disponible.\nModo demo activo."
+            ctk.CTkLabel(body, text=hint, font=(FONT, 9), text_color=COLORS["magenta"],
+                         justify="left", anchor="w").grid(row=len(names) + 1, column=0, sticky="w", pady=(10, 0))
 
-    # ============================================================
-    # PANEL DE CHAT
-    # ============================================================
-
-    def _create_chat_panel(self):
-        """Crea el panel central de conversación."""
-        chat_panel = ctk.CTkFrame(
-            self.main_frame,
-            fg_color=COLORS["bg_panel"],
-            corner_radius=8,
-            border_width=2,
-            border_color=COLORS["neon_cyan"]
-        )
-        chat_panel.grid(row=1, column=1, sticky="nsew", padx=(0, 10))
-        chat_panel.grid_columnconfigure(0, weight=1)
-        chat_panel.grid_rowconfigure(1, weight=1)
-
-        # Título del panel
-        title = ctk.CTkLabel(
-            chat_panel,
-            text="◈ CONVERSACIÓN ◈",
-            font=("Consolas", 12, "bold"),
-            text_color=COLORS["neon_cyan"],
-            fg_color="transparent"
-        )
-        title.grid(row=0, column=0, padx=10, pady=(10, 5))
-
-        # Área de mensajes (scrollable)
-        self.chat_area = ctk.CTkScrollableFrame(
-            chat_panel,
-            fg_color=COLORS["bg_dark"],
-            corner_radius=4,
-            border_width=1,
-            border_color=COLORS["border"]
-        )
-        self.chat_area.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
-        self.chat_area.grid_columnconfigure(0, weight=1)
-
-        # Línea de escaneo animada
-        self.scan_line = ctk.CTkFrame(
-            chat_panel,
-            height=2,
-            fg_color=COLORS["neon_cyan"],
-            corner_radius=0
-        )
-        self.scan_line.grid(row=2, column=0, sticky="ew", pady=(0, 10))
-
-    # ============================================================
-    # PANEL DE ESTADO
-    # ============================================================
-
-    def _create_status_panel(self):
-        """Crea el panel derecho con indicadores de estado."""
-        status_panel = ctk.CTkFrame(
-            self.main_frame,
-            fg_color=COLORS["bg_panel"],
-            corner_radius=8,
-            border_width=2,
-            border_color=COLORS["neon_cyan"]
-        )
-        status_panel.grid(row=1, column=2, sticky="ns", padx=(0, 0))
-        status_panel.grid_columnconfigure(0, weight=1)
-
-        # Título del panel
-        title = ctk.CTkLabel(
-            status_panel,
-            text="◈ ESTADO ◈",
-            font=("Consolas", 12, "bold"),
-            text_color=COLORS["neon_cyan"],
-            fg_color="transparent"
-        )
-        title.grid(row=0, column=0, padx=10, pady=(10, 5))
-
-        # Indicadores de estado
-        indicators = [
-            ("CPU", "12%", COLORS["neon_green"]),
-            ("MEM", "45%", COLORS["neon_green"]),
-            ("NET", "OK", COLORS["neon_green"]),
-            ("GPU", "IDLE", COLORS["neon_cyan"]),
-            ("API", "READY", COLORS["neon_green"]),
-        ]
-
-        for i, (label, value, color) in enumerate(indicators):
-            # Frame del indicador
-            indicator_frame = ctk.CTkFrame(
-                status_panel,
-                fg_color=COLORS["bg_dark"],
-                corner_radius=4,
-                border_width=1,
-                border_color=COLORS["border"]
-            )
-            indicator_frame.grid(row=i+1, column=0, sticky="ew", padx=10, pady=3)
-            indicator_frame.grid_columnconfigure(1, weight=1)
-
-            # Etiqueta
-            lbl = ctk.CTkLabel(
-                indicator_frame,
-                text=label,
-                font=("Consolas", 10, "bold"),
-                text_color=COLORS["text_secondary"],
-                fg_color="transparent"
-            )
-            lbl.grid(row=0, column=0, padx=8, pady=5)
-
-            # Valor
-            val = ctk.CTkLabel(
-                indicator_frame,
-                text=value,
-                font=("Consolas", 10, "bold"),
-                text_color=color,
-                fg_color="transparent"
-            )
-            val.grid(row=0, column=1, padx=8, pady=5, sticky="e")
-
-        # Barra de progreso
-        progress_frame = ctk.CTkFrame(
-            status_panel,
-            fg_color=COLORS["bg_dark"],
-            corner_radius=4,
-            border_width=1,
-            border_color=COLORS["border"]
-        )
-        progress_frame.grid(row=len(indicators)+2, column=0, sticky="ew", padx=10, pady=(10, 5))
-        progress_frame.grid_columnconfigure(0, weight=1)
-
-        progress_label = ctk.CTkLabel(
-            progress_frame,
-            text="PROCESANDO",
-            font=("Consolas", 9),
-            text_color=COLORS["text_secondary"],
-            fg_color="transparent"
-        )
-        progress_label.grid(row=0, column=0, padx=8, pady=(5, 0))
-
-        self.progress_bar = ctk.CTkProgressBar(
-            progress_frame,
-            fg_color=COLORS["bg_panel"],
-            progress_color=COLORS["neon_cyan"],
-            height=8,
-            corner_radius=4
-        )
-        self.progress_bar.set(0)
-        self.progress_bar.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 5))
-
-        # Log de actividad
-        log_title = ctk.CTkLabel(
-            status_panel,
-            text="◈ LOG ◈",
-            font=("Consolas", 10, "bold"),
-            text_color=COLORS["neon_cyan"],
-            fg_color="transparent"
-        )
-        log_title.grid(row=len(indicators)+3, column=0, padx=10, pady=(10, 5))
-
-        self.log_area = ctk.CTkScrollableFrame(
-            status_panel,
-            fg_color=COLORS["bg_dark"],
-            corner_radius=4,
-            border_width=1,
-            border_color=COLORS["border"],
-            height=150
-        )
-        self.log_area.grid(row=len(indicators)+4, column=0, sticky="ew", padx=10, pady=(0, 10))
-        self.log_area.grid_columnconfigure(0, weight=1)
-
-        # Mensajes de log iniciales
-        self._add_log("Sistema iniciado")
-        self._add_log("Cargando proveedores...")
-        self._add_log("OmniRoute detectado")
-        self._add_log("Listo para operar")
-
-    # ============================================================
-    # PANEL DE ENTRADA
-    # ============================================================
-
-    def _create_input_panel(self):
-        """Crea el panel inferior de entrada de texto."""
-        input_panel = ctk.CTkFrame(
-            self.main_frame,
-            fg_color=COLORS["bg_panel"],
-            corner_radius=8,
-            border_width=2,
-            border_color=COLORS["neon_cyan"]
-        )
-        input_panel.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(10, 0))
-        input_panel.grid_columnconfigure(0, weight=1)
-
-        # Entrada de texto
-        self.input_entry = ctk.CTkEntry(
-            input_panel,
-            placeholder_text="> Escribe tu prompt aquí...",
-            font=("Consolas", 12),
-            fg_color=COLORS["bg_dark"],
-            border_width=1,
-            border_color=COLORS["border"],
-            height=40
-        )
-        self.input_entry.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
-        self.input_entry.bind("<Return>", self._on_enter)
-
-        # Botón de enviar
-        self.send_btn = ctk.CTkButton(
-            input_panel,
-            text="◈ ENVIAR ◈",
-            font=("Consolas", 12, "bold"),
-            fg_color=COLORS["neon_cyan_dim"],
-            hover_color=COLORS["neon_cyan"],
-            text_color=COLORS["bg_dark"],
-            border_width=2,
-            border_color=COLORS["neon_cyan"],
-            command=self._send_message,
-            width=120
-        )
-        self.send_btn.grid(row=0, column=1, padx=(0, 10), pady=10)
-
-        # Botón de limpiar
-        clear_btn = ctk.CTkButton(
-            input_panel,
-            text="LIMPIAR",
-            font=("Consolas", 10),
-            fg_color="transparent",
-            hover_color=COLORS["neon_magenta"],
-            text_color=COLORS["text_secondary"],
-            border_width=1,
-            border_color=COLORS["border"],
+        ctk.CTkButton(
+            body, text="NUEVA SESIÓN", font=(FONT, 11, "bold"), height=36,
+            fg_color="transparent", hover_color=COLORS["magenta_dim"], text_color=COLORS["magenta"],
+            border_width=1, border_color=COLORS["magenta"], corner_radius=6,
             command=self._clear_chat,
-            width=80
+        ).grid(row=len(names) + 2, column=0, sticky="ew", pady=(16, 0))
+
+    # ------------------------------------------------------------
+    # CHAT
+    # ------------------------------------------------------------
+
+    def _create_chat(self) -> None:
+        panel = NeonPanel(self.root_frame, "Canal de conversación", tag="SECURE // E2E")
+        panel.grid(row=1, column=1, sticky="nsew")
+        panel.body.grid_rowconfigure(0, weight=1)
+
+        self.chat_area = ctk.CTkScrollableFrame(
+            panel.body, fg_color=COLORS["bg"], corner_radius=8,
+            scrollbar_button_color=COLORS["cyan_dim"], scrollbar_button_hover_color=COLORS["cyan_mid"],
         )
-        clear_btn.grid(row=0, column=2, padx=(0, 10), pady=10)
+        self.chat_area.grid(row=0, column=0, sticky="nsew")
+        self.chat_area.grid_columnconfigure(0, weight=1)
+        self.chat_area.bind("<Configure>", self._on_chat_resize)
 
-    # ============================================================
-    # ELEMENTOS DECORATIVOS
-    # ============================================================
+        self.thinking_label = ctk.CTkLabel(panel.body, text="", font=(FONT, 10),
+                                           text_color=COLORS["cyan_mid"], anchor="w")
+        self.thinking_label.grid(row=1, column=0, sticky="w", pady=(6, 0))
 
-    def _create_decorative_elements(self):
-        """Crea elementos decorativos estilo HUD."""
-        # Esquinas decorativas
-        corner_size = 30
+    def _bubble_wraplength(self) -> int:
+        width = self.chat_area.winfo_width()
+        return max(260, int(width * 0.68))
 
-        # Esquina superior izquierda
-        self._create_corner(0, 0, corner_size, "tl")
+    def _on_chat_resize(self, _event) -> None:
+        wrap = self._bubble_wraplength()
+        for bubble in self.bubbles:
+            bubble.set_wraplength(wrap if bubble.sender != "system" else wrap + 80)
 
-        # Esquina superior derecha
-        self._create_corner(WINDOW_WIDTH - corner_size, 0, corner_size, "tr")
+    # ------------------------------------------------------------
+    # TELEMETRÍA
+    # ------------------------------------------------------------
 
-        # Esquina inferior izquierda
-        self._create_corner(0, WINDOW_HEIGHT - corner_size, corner_size, "bl")
+    def _create_telemetry(self) -> None:
+        panel = NeonPanel(self.root_frame, "Telemetría", tag="LIVE", width=240)
+        panel.grid(row=1, column=2, rowspan=2, sticky="nse", padx=(14, 0))
+        panel.grid_propagate(False)
+        body = panel.body
+        body.grid_rowconfigure(6, weight=1)
 
-        # Esquina inferior derecha
-        self._create_corner(WINDOW_WIDTH - corner_size, WINDOW_HEIGHT - corner_size, corner_size, "br")
+        self.metric_labels: Dict[str, ctk.CTkLabel] = {}
+        self.metric_bars: Dict[str, ctk.CTkProgressBar] = {}
+        for i, key in enumerate(["CPU", "MEM"]):
+            self._metric_row(body, i, key, with_bar=True)
+        for i, key in enumerate(["LATENCIA", "TOKENS", "MENSAJES"], start=2):
+            self._metric_row(body, i, key, with_bar=False)
 
-        # Líneas decorativas en los bordes
-        # Línea superior
-        top_line = ctk.CTkFrame(
-            self,
-            height=2,
-            fg_color=COLORS["neon_cyan"],
-            corner_radius=0
+        ctk.CTkLabel(body, text="◢ REGISTRO", font=(FONT, 10, "bold"),
+                     text_color=COLORS["cyan"]).grid(row=5, column=0, sticky="w", pady=(14, 4))
+        self.log_box = ctk.CTkTextbox(
+            body, font=(FONT, 9), fg_color=COLORS["bg"], text_color=COLORS["text_muted"],
+            corner_radius=6, border_width=1, border_color=COLORS["text_dim"], wrap="word",
         )
-        top_line.place(x=corner_size, y=0, width=WINDOW_WIDTH - 2*corner_size)
+        self.log_box.grid(row=6, column=0, sticky="nsew")
+        self.log_box.configure(state="disabled")
 
-        # Línea inferior
-        bottom_line = ctk.CTkFrame(
-            self,
-            height=2,
-            fg_color=COLORS["neon_cyan"],
-            corner_radius=0
+    def _metric_row(self, parent, row: int, key: str, with_bar: bool) -> None:
+        frame = ctk.CTkFrame(parent, fg_color=COLORS["bg"], corner_radius=6,
+                             border_width=1, border_color=COLORS["text_dim"])
+        frame.grid(row=row, column=0, sticky="ew", pady=3)
+        frame.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(frame, text=key, font=(FONT, 9, "bold"),
+                     text_color=COLORS["text_muted"]).grid(row=0, column=0, sticky="w", padx=10, pady=(6, 2 if with_bar else 6))
+        value = ctk.CTkLabel(frame, text="--", font=(FONT, 11, "bold"), text_color=COLORS["cyan"])
+        value.grid(row=0, column=1, sticky="e", padx=10, pady=(6, 2 if with_bar else 6))
+        self.metric_labels[key] = value
+        if with_bar:
+            bar = ctk.CTkProgressBar(frame, height=4, corner_radius=2, fg_color=COLORS["panel_raised"],
+                                     progress_color=COLORS["cyan"])
+            bar.set(0)
+            bar.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 8))
+            self.metric_bars[key] = bar
+
+    # ------------------------------------------------------------
+    # ENTRADA
+    # ------------------------------------------------------------
+
+    def _create_input(self) -> None:
+        panel = ctk.CTkFrame(self.root_frame, fg_color=COLORS["panel"], corner_radius=10,
+                             border_width=1, border_color=COLORS["cyan_mid"])
+        panel.grid(row=2, column=1, sticky="ew", pady=(14, 0))
+        panel.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(panel, text=">_", font=(FONT, 16, "bold"),
+                     text_color=COLORS["cyan"]).grid(row=0, column=0, padx=(16, 4), pady=12, sticky="n")
+
+        self.input_box = ctk.CTkTextbox(
+            panel, height=56, font=(FONT, 12), fg_color="transparent",
+            text_color=COLORS["text"], border_width=0, wrap="word",
         )
-        bottom_line.place(x=corner_size, y=WINDOW_HEIGHT-2, width=WINDOW_WIDTH - 2*corner_size)
+        self.input_box.grid(row=0, column=1, sticky="ew", pady=8)
+        self.input_box.bind("<Return>", self._on_enter)
 
-        # Línea izquierda
-        left_line = ctk.CTkFrame(
-            self,
-            width=2,
-            fg_color=COLORS["neon_cyan"],
-            corner_radius=0
+        actions = ctk.CTkFrame(panel, fg_color="transparent")
+        actions.grid(row=0, column=2, padx=(6, 12), pady=10)
+        self.send_btn = ctk.CTkButton(
+            actions, text="TRANSMITIR", width=130, height=38, font=(FONT, 12, "bold"),
+            fg_color=COLORS["cyan"], hover_color=COLORS["cyan_mid"], text_color=COLORS["bg"],
+            corner_radius=6, command=self._send_message,
         )
-        left_line.place(x=0, y=corner_size, height=WINDOW_HEIGHT - 2*corner_size)
+        self.send_btn.pack()
+        ctk.CTkLabel(actions, text="ENTER enviar · SHIFT+ENTER salto", font=(FONT, 8),
+                     text_color=COLORS["text_dim"]).pack(pady=(4, 0))
 
-        # Línea derecha
-        right_line = ctk.CTkFrame(
-            self,
-            width=2,
-            fg_color=COLORS["neon_cyan"],
-            corner_radius=0
-        )
-        right_line.place(x=WINDOW_WIDTH-2, y=corner_size, height=WINDOW_HEIGHT - 2*corner_size)
+        self.input_box.focus_set()
 
-    def _create_corner(self, x, y, size, position):
-        """Crea una esquina decorativa usando tkinter.Canvas."""
-        import tkinter as tk
-        # Canvas de la esquina
-        corner = tk.Canvas(
-            self,
-            width=size,
-            height=size,
-            bg=COLORS["bg_dark"],
-            highlightthickness=0
-        )
-        corner.place(x=x, y=y)
-
-        # Dibujar líneas de la esquina
-        if position == "tl":  # Superior izquierda
-            corner.create_line(0, 0, size, 0, fill=COLORS["neon_cyan"], width=2)
-            corner.create_line(0, 0, 0, size, fill=COLORS["neon_cyan"], width=2)
-        elif position == "tr":  # Superior derecha
-            corner.create_line(0, 0, size, 0, fill=COLORS["neon_cyan"], width=2)
-            corner.create_line(size, 0, size, size, fill=COLORS["neon_cyan"], width=2)
-        elif position == "bl":  # Inferior izquierda
-            corner.create_line(0, size, size, size, fill=COLORS["neon_cyan"], width=2)
-            corner.create_line(0, 0, 0, size, fill=COLORS["neon_cyan"], width=2)
-        elif position == "br":  # Inferior derecha
-            corner.create_line(0, size, size, size, fill=COLORS["neon_cyan"], width=2)
-            corner.create_line(size, 0, size, size, fill=COLORS["neon_cyan"], width=2)
-
-    # ============================================================
+    # ------------------------------------------------------------
     # ANIMACIONES
-    # ============================================================
+    # ------------------------------------------------------------
 
-    def _animate_status_light(self):
-        """Animación del indicador de estado (parpadeo)."""
-        if self.connected:
-            self.status_indicator.configure(text_color=COLORS["neon_green"])
+    def _animate_scan(self) -> None:
+        c = self.scan_canvas
+        w = max(c.winfo_width(), 1)
+        c.delete("all")
+        c.create_line(0, 2, w, 2, fill=COLORS["cyan_dim"])
+        seg = max(60, w // 6)
+        self._scan_x = (self._scan_x + 6) % (w + seg)
+        c.create_line(self._scan_x - seg, 2, self._scan_x, 2, fill=COLORS["cyan"], width=2)
+        self.after(30, self._animate_scan)
+
+    def _animate_status(self) -> None:
+        self._blink = not self._blink
+        color = COLORS["magenta"] if self.is_generating else COLORS["green"]
+        self.status_dot.configure(text_color=color if self._blink else COLORS["text_dim"])
+        self.status_text.configure(text="PROCESANDO" if self.is_generating else "ENLACE ACTIVO")
+
+        if self.is_generating:
+            self._thinking_step = (self._thinking_step + 1) % 4
+            bars = "▮" * (self._thinking_step + 1) + "▯" * (3 - self._thinking_step)
+            self.thinking_label.configure(text=f"{self.current_provider} decodificando señal {bars}")
         else:
-            self.status_indicator.configure(text_color=COLORS["neon_magenta"])
+            self.thinking_label.configure(text="")
+        self.after(450, self._animate_status)
 
-        # Programar próxima animación
-        self.after(1000, self._animate_status_light)
-
-    def _animate_scan_line(self):
-        """Animación de la línea de escaneo en el chat."""
-        # Mover la línea de escaneo
-        current_y = self.scan_line.winfo_y()
-        max_y = self.chat_area.winfo_height()
-
-        if current_y < max_y:
-            self.scan_line.place(y=current_y + 2)
+    def _update_telemetry(self) -> None:
+        if psutil:
+            cpu = psutil.cpu_percent(interval=None)
+            mem = psutil.virtual_memory().percent
         else:
-            self.scan_line.place(y=self.chat_area.winfo_y())
-
-        # Programar próxima animación
-        self.after(50, self._animate_scan_line)
-
-    # ============================================================
-    # FUNCIONES DE INTERACCIÓN
-    # ============================================================
-
-    def _select_provider(self, provider_name):
-        """Selecciona un proveedor."""
-        self.current_provider = provider_name
-
-        # Actualizar botones
-        for name, btn in self.provider_buttons.items():
-            if name == provider_name:
-                btn.configure(
-                    fg_color=COLORS["neon_cyan_dim"],
-                    text_color=COLORS["bg_dark"],
-                    border_color=COLORS["neon_cyan"]
-                )
-            else:
-                btn.configure(
-                    fg_color="transparent",
-                    text_color=COLORS["text_primary"],
-                    border_color=COLORS["border"]
-                )
-
-        # Actualizar información
-        self.provider_info.configure(
-            text=f"Proveedor: {provider_name}\nModelo: auto/coding:free\nEstado: Desconectado"
-        )
-
-        self._add_log(f"Proveedor seleccionado: {provider_name}")
-
-    def _toggle_connection(self):
-        """Alterna la conexión."""
-        self.connected = not self.connected
-
-        if self.connected:
-            self.connect_btn.configure(
-                text="◈ DESCONECTAR ◈",
-                fg_color=COLORS["neon_magenta"],
-                hover_color=COLORS["neon_magenta"],
-                text_color=COLORS["text_primary"]
+            cpu = random.uniform(8, 28) + (35 if self.is_generating else 0)
+            mem = random.uniform(40, 48)
+        for key, value in (("CPU", cpu), ("MEM", mem)):
+            self.metric_labels[key].configure(
+                text=f"{value:.0f}%", text_color=COLORS["magenta"] if value > 80 else COLORS["cyan"]
             )
-            self.provider_info.configure(
-                text=f"Proveedor: {self.current_provider}\nModelo: auto/coding:free\nEstado: Conectado"
-            )
-            self._add_log("Conectado al proveedor")
-            self._add_message("system", f"Conectado a {self.current_provider}")
+            self.metric_bars[key].set(min(value / 100, 1))
+
+        latency = f"{self.last_latency_ms} ms" if self.last_latency_ms is not None else "--"
+        self.metric_labels["LATENCIA"].configure(text=latency)
+        self.metric_labels["TOKENS"].configure(text=str(self.token_count))
+        self.metric_labels["MENSAJES"].configure(text=str(len(self.messages)))
+        self.after(1500, self._update_telemetry)
+
+    # ------------------------------------------------------------
+    # INTERACCIÓN
+    # ------------------------------------------------------------
+
+    def _boot_sequence(self) -> None:
+        self._log("Núcleo iniciado")
+        if self.provider_names:
+            self._log(f"Proveedores: {', '.join(self.provider_names)}")
+            self._add_message("system", f"Enlace establecido con {len(self.provider_names)} proveedor(es). Listo para recibir comandos.")
         else:
-            self.connect_btn.configure(
-                text="◈ CONECTAR ◈",
-                fg_color=COLORS["neon_cyan_dim"],
-                hover_color=COLORS["neon_cyan"],
-                text_color=COLORS["bg_dark"]
-            )
-            self.provider_info.configure(
-                text=f"Proveedor: {self.current_provider}\nModelo: auto/coding:free\nEstado: Desconectado"
-            )
-            self._add_log("Desconectado del proveedor")
-            self._add_message("system", "Desconectado del proveedor")
+            self._log("Sin proveedores: modo demo")
+            self._add_message("system", "No se detectaron proveedores en .env. Modo demo activo: las respuestas son simuladas.")
 
-    def _send_message(self):
-        """Envía el mensaje del usuario."""
-        prompt = self.input_entry.get().strip()
-        if not prompt:
+    def _select_provider(self, name: str, log: bool = True) -> None:
+        if self.is_generating:
             return
-
-        # Limpiar entrada
-        self.input_entry.delete(0, "end")
-
-        # Agregar mensaje del usuario
-        self._add_message("user", prompt)
-
-        # Simular respuesta (en producción sería async con router)
-        self.is_generating = True
-        self.progress_bar.set(0.3)
-        self._add_log("Generando respuesta...")
-
-        # Simular demora
-        self.after(1500, lambda: self._simulate_response(prompt))
-
-    def _simulate_response(self, prompt):
-        """Simula una respuesta de la IA."""
-        response = f"Respuesta simulada para: {prompt[:50]}..."
-
-        self._add_message("ai", response)
-        self.is_generating = False
-        self.progress_bar.set(0)
-        self._add_log("Respuesta generada")
+        self.current_provider = name
+        for n, btn in self.provider_buttons.items():
+            active = n == name
+            btn.configure(
+                fg_color=COLORS["cyan_dim"] if active else "transparent",
+                border_color=COLORS["cyan"] if active else COLORS["text_dim"],
+                text_color=COLORS["cyan"] if active else COLORS["text"],
+            )
+        details = self._provider_details(name)
+        self.model_label.configure(text=details["model"])
+        self.endpoint_label.configure(text=details["endpoint"])
+        if log:
+            self._log(f"Proveedor activo: {name}")
 
     def _on_enter(self, event):
-        """Maneja la tecla Enter."""
+        if event.state & 0x0001:
+            return None
         self._send_message()
         return "break"
 
-    def _clear_chat(self):
-        """Limpia el chat."""
-        for widget in self.chat_area.winfo_children():
-            widget.destroy()
-        self.messages.clear()
-        self._add_log("Chat limpiado")
+    def _send_message(self) -> None:
+        if self.is_generating:
+            return
+        prompt = self.input_box.get("1.0", "end").strip()
+        if not prompt:
+            return
+        self.input_box.delete("1.0", "end")
 
-    # ============================================================
-    # FUNCIONES DE MENSAJES
-    # ============================================================
+        self._add_message("user", prompt)
+        bubble = self._add_message("ai", "")
+        self._set_generating(True)
+        self._log(f"Transmitiendo a {self.current_provider}")
 
-    def _add_message(self, sender, text):
-        """Agrega un mensaje al chat."""
-        # Crear frame del mensaje
-        msg_frame = ctk.CTkFrame(
-            self.chat_area,
-            fg_color="transparent",
-            corner_radius=0
-        )
-        msg_frame.pack(fill="x", pady=5, padx=5)
-        msg_frame.grid_columnconfigure(0, weight=1)
-
-        # Determinar color según el remitente
-        if sender == "user":
-            color = COLORS["neon_cyan"]
-            prefix = "TÚ >"
-        elif sender == "ai":
-            color = COLORS["neon_green"]
-            prefix = "IA >"
+        started = time.perf_counter()
+        if self.router and self.current_provider != DEMO_PROVIDER:
+            self.runner.submit(self._stream_real(prompt, bubble, started))
         else:
-            color = COLORS["text_secondary"]
-            prefix = "SYS >"
+            self.runner.submit(self._stream_demo(prompt, bubble, started))
 
-        # Etiqueta del mensaje
-        label = ctk.CTkLabel(
-            msg_frame,
-            text=f"{prefix} {text}",
-            font=("Consolas", 11),
-            text_color=color,
-            fg_color="transparent",
-            justify="left",
-            anchor="w",
-            wraplength=500
+    async def _stream_real(self, prompt: str, bubble: MessageBubble, started: float) -> None:
+        first_chunk = True
+        try:
+            async for chunk in self.router.generate_stream(
+                prompt, provider=self.current_provider, system_prompt=SYSTEM_PROMPT
+            ):
+                if first_chunk:
+                    self.after(0, self._set_latency, started)
+                    first_chunk = False
+                self.after(0, self._append_chunk, bubble, chunk)
+            if first_chunk:
+                text = await self.router.generate(
+                    prompt, provider=self.current_provider, system_prompt=SYSTEM_PROMPT
+                )
+                self.after(0, self._set_latency, started)
+                self.after(0, self._append_chunk, bubble, text)
+            self.after(0, self._finish_generation, bubble, None)
+        except Exception as e:
+            self.after(0, self._finish_generation, bubble, str(e))
+
+    async def _stream_demo(self, prompt: str, bubble: MessageBubble, started: float) -> None:
+        await asyncio.sleep(0.6)
+        self.after(0, self._set_latency, started)
+        reply = (
+            f"Señal recibida: \"{prompt[:80]}\". Estoy funcionando en modo demo. "
+            "Configurá un proveedor en tu archivo .env (OmniRoute, OpenRouter o uno personalizado) "
+            "para obtener respuestas reales en streaming."
         )
-        label.grid(row=0, column=0, sticky="w")
+        for word in reply.split(" "):
+            self.after(0, self._append_chunk, bubble, word + " ")
+            await asyncio.sleep(0.04)
+        self.after(0, self._finish_generation, bubble, None)
 
-        # Guardar mensaje
-        self.messages.append({"sender": sender, "text": text, "time": time.time()})
+    def _set_latency(self, started: float) -> None:
+        self.last_latency_ms = int((time.perf_counter() - started) * 1000)
 
-        # Scroll al final
+    def _append_chunk(self, bubble: MessageBubble, chunk: str) -> None:
+        bubble.append(chunk)
+        self.token_count += max(1, len(chunk.split()))
+        self._scroll_to_bottom()
+
+    def _finish_generation(self, bubble: MessageBubble, error: Optional[str]) -> None:
+        if error:
+            if not bubble.text.strip():
+                bubble.destroy()
+                self.bubbles.remove(bubble)
+            self._add_message("error", f"Fallo de enlace con {self.current_provider}: {error}")
+            self._log("Error en la transmisión")
+        else:
+            bubble.set_text(bubble.text.strip() or "(respuesta vacía)")
+            self.messages.append({"sender": "ai", "text": bubble.text, "time": time.time()})
+            self._log("Respuesta recibida")
+        self._set_generating(False)
+
+    def _set_generating(self, value: bool) -> None:
+        self.is_generating = value
+        self.send_btn.configure(
+            state="disabled" if value else "normal",
+            text="EN CURSO..." if value else "TRANSMITIR",
+            fg_color=COLORS["cyan_dim"] if value else COLORS["cyan"],
+        )
+
+    def _clear_chat(self) -> None:
+        if self.is_generating:
+            return
+        for bubble in self.bubbles:
+            bubble.destroy()
+        self.bubbles.clear()
+        self.messages.clear()
+        self.token_count = 0
+        self.last_latency_ms = None
+        self._log("Sesión reiniciada")
+        self._add_message("system", "Nueva sesión iniciada.")
+
+    # ------------------------------------------------------------
+    # MENSAJES Y LOG
+    # ------------------------------------------------------------
+
+    def _add_message(self, sender: str, text: str) -> MessageBubble:
+        wrap = self._bubble_wraplength()
+        bubble = MessageBubble(self.chat_area, sender, text, wrap if sender != "system" else wrap + 80)
+        if bubble.align == "e":
+            bubble.grid(row=len(self.bubbles), column=0, sticky="e", padx=(80, 8), pady=6)
+        elif bubble.align == "w":
+            bubble.grid(row=len(self.bubbles), column=0, sticky="w", padx=(8, 80), pady=6)
+        else:
+            bubble.grid(row=len(self.bubbles), column=0, pady=6)
+        self.bubbles.append(bubble)
+        if sender in ("user", "error"):
+            self.messages.append({"sender": sender, "text": text, "time": time.time()})
+        self._scroll_to_bottom()
+        return bubble
+
+    def _scroll_to_bottom(self) -> None:
         self.chat_area.update_idletasks()
         self.chat_area._parent_canvas.yview_moveto(1.0)
 
-    def _add_log(self, text):
-        """Agrega una entrada al log."""
-        timestamp = time.strftime("%H:%M:%S")
-        log_entry = ctk.CTkLabel(
-            self.log_area,
-            text=f"[{timestamp}] {text}",
-            font=("Consolas", 8),
-            text_color=COLORS["text_secondary"],
-            fg_color="transparent",
-            justify="left",
-            anchor="w"
-        )
-        log_entry.pack(fill="x", pady=1, padx=5)
+    def _log(self, text: str) -> None:
+        self.log_box.configure(state="normal")
+        self.log_box.insert("end", f"[{time.strftime('%H:%M:%S')}] {text}\n")
+        self.log_box.see("end")
+        self.log_box.configure(state="disabled")
 
-        # Scroll al final
-        self.log_area.update_idletasks()
-        self.log_area._parent_canvas.yview_moveto(1.0)
+    def _on_close(self) -> None:
+        if self.router:
+            try:
+                self.runner.submit(self.router.close_all()).result(timeout=2)
+            except Exception:
+                pass
+        self.runner.stop()
+        self.destroy()
 
-
-# ============================================================
-# PUNTO DE ENTRADA
-# ============================================================
 
 def main():
-    """Punto de entrada de la aplicación."""
     app = CyberpunkHUD()
     app.mainloop()
 
