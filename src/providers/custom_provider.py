@@ -14,7 +14,7 @@ misma logica pero el payload de ese proveedor.
 """
 
 import json
-from typing import Any, AsyncIterator, List
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 from .base_provider import BaseProvider
 
@@ -27,11 +27,14 @@ class CustomProvider(BaseProvider):
         return headers
 
     # ------------------------------------------------------------------
-    async def generate(self, prompt: str, system_prompt: str = "You are a helpful assistant.", **kwargs: Any) -> str:
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-        ]
+    async def generate(
+        self,
+        prompt: str,
+        system_prompt: str = "You are a helpful assistant.",
+        history: Optional[List[Dict[str, str]]] = None,
+        **kwargs: Any,
+    ) -> str:
+        messages = self.build_messages(prompt, system_prompt, history)
         payload = {"model": self.model, "messages": messages, **kwargs}
 
         resp = await self.client.post(f"{self.base_url}/chat/completions", headers=await self._headers(), json=payload)
@@ -40,11 +43,14 @@ class CustomProvider(BaseProvider):
         return data["choices"][0]["message"]["content"]
 
     # ------------------------------------------------------------------
-    async def generate_stream(self, prompt: str, system_prompt: str = "You are a helpful assistant.", **kwargs: Any) -> AsyncIterator[str]:
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-        ]
+    async def generate_stream(
+        self,
+        prompt: str,
+        system_prompt: str = "You are a helpful assistant.",
+        history: Optional[List[Dict[str, str]]] = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[str]:
+        messages = self.build_messages(prompt, system_prompt, history)
         payload = {"model": self.model, "messages": messages, "stream": True, **kwargs}
 
         async with self.client.stream("POST", f"{self.base_url}/chat/completions", headers=await self._headers(), json=payload) as resp:

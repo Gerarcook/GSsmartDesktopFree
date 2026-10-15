@@ -7,7 +7,7 @@ compatible con OpenAI (vLLM, Groq, Together, etc).
 """
 
 import json
-from typing import Any, AsyncIterator, List
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 from .base_provider import BaseProvider
 
@@ -25,20 +25,26 @@ class OpenRouterProvider(BaseProvider):
         return resp.json()
 
     # ------------------------------------------------------------------
-    async def generate(self, prompt: str, system_prompt: str = "You are a helpful assistant.", **kwargs: Any) -> str:
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-        ]
+    async def generate(
+        self,
+        prompt: str,
+        system_prompt: str = "You are a helpful assistant.",
+        history: Optional[List[Dict[str, str]]] = None,
+        **kwargs: Any,
+    ) -> str:
+        messages = self.build_messages(prompt, system_prompt, history)
         data = await self._post(messages, **kwargs)
         return data["choices"][0]["message"]["content"]
 
     # ------------------------------------------------------------------
-    async def generate_stream(self, prompt: str, system_prompt: str = "You are a helpful assistant.", **kwargs: Any) -> AsyncIterator[str]:
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-        ]
+    async def generate_stream(
+        self,
+        prompt: str,
+        system_prompt: str = "You are a helpful assistant.",
+        history: Optional[List[Dict[str, str]]] = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[str]:
+        messages = self.build_messages(prompt, system_prompt, history)
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",

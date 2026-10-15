@@ -90,6 +90,8 @@ class ProviderRouter:
         **kwargs: Any,
     ) -> AsyncIterator[str]:
         """Igual que generate pero con streaming (va devolviendo texto por partes)."""
+        if not provider and not self.providers:
+            raise RuntimeError("No hay proveedores configurados.")
         name = provider or self.providers[0]
         prov = self.get(name)
         async for chunk in prov.generate_stream(prompt, system_prompt=system_prompt, **kwargs):
@@ -107,9 +109,6 @@ class ProviderRouter:
 # Helper sincrono para la GUI / scripts simples.
 # ProviderRouter.generate() es async, pero Tkinter necesita una funcion sync.
 # ------------------------------------------------------------------
-_sync_router = ProviderRouter()
-
-
 def get_ai_response(text: str, provider: Optional[str] = None, **kwargs: Any) -> str:
     """Envia el texto al router y devuelve la respuesta como string."""
     try:
@@ -120,4 +119,11 @@ def get_ai_response(text: str, provider: Optional[str] = None, **kwargs: Any) ->
     if loop and loop.is_running():
         raise RuntimeError("No llames get_ai_response() desde un async. Usa ProviderRouter.generate().")
 
-    return asyncio.run(_sync_router.generate(text, provider=provider, **kwargs))
+    async def _run() -> str:
+        router = ProviderRouter()
+        try:
+            return await router.generate(text, provider=provider, **kwargs)
+        finally:
+            await router.close_all()
+
+    return asyncio.run(_run())

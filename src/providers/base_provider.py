@@ -22,11 +22,32 @@ class BaseProvider(ABC):
         self.client = httpx.AsyncClient(timeout=120.0)
 
     # ------------------------------------------------------------------
+    @staticmethod
+    def build_messages(
+        prompt: str,
+        system_prompt: str,
+        history: Optional[List[Dict[str, str]]] = None,
+    ) -> List[Dict[str, str]]:
+        """Arma la lista de mensajes: system + historial previo + mensaje actual.
+
+        history usa el formato OpenAI: [{"role": "user"|"assistant", "content": "..."}].
+        """
+        messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
+        for item in history or []:
+            role = item.get("role")
+            content = item.get("content")
+            if role in ("user", "assistant") and isinstance(content, str) and content:
+                messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": prompt})
+        return messages
+
+    # ------------------------------------------------------------------
     @abstractmethod
     async def generate(
         self,
         prompt: str,
         system_prompt: str = "You are a helpful assistant.",
+        history: Optional[List[Dict[str, str]]] = None,
         **kwargs: Any,
     ) -> str:
         """Envia un mensaje y devuelve la respuesta completa (modo no-stream)."""
@@ -38,6 +59,7 @@ class BaseProvider(ABC):
         self,
         prompt: str,
         system_prompt: str = "You are a helpful assistant.",
+        history: Optional[List[Dict[str, str]]] = None,
         **kwargs: Any,
     ) -> AsyncIterator[str]:
         """Envia un mensaje y va devolviendo el texto por partes (streaming)."""
