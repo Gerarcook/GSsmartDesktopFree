@@ -39,26 +39,10 @@ else:
 
 
 # ============================================================
-# PALETA Y TIPOGRAFÍA
+# PALETA Y TIPOGRAFÍA (tokens unificados en src/ui/theme.py)
 # ============================================================
 
-COLORS = {
-    "bg": "#05070D",
-    "panel": "#0A111C",
-    "panel_raised": "#0E1726",
-    "cyan": "#00F0FF",
-    "cyan_mid": "#00A8B5",
-    "cyan_dim": "#0B3A44",
-    "magenta": "#FF2A6D",
-    "magenta_dim": "#3D0F22",
-    "green": "#05FFA1",
-    "text": "#E4F6F8",
-    "text_muted": "#7A8EA0",
-    "text_dim": "#3A4A5C",
-    "grid": "#0C1624",
-}
-
-FONT = "Consolas"
+from src.ui.theme import COLORS, FONT_MONO as FONT, FS
 DEMO_PROVIDER = "DEMO"
 SYSTEM_PROMPT = "Sos GSsmart, un asistente útil. Respondé de forma clara y concisa."
 MAX_HISTORY_MESSAGES = 20
