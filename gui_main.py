@@ -708,15 +708,16 @@ class App(ctk.CTk):
             row = ctk.CTkFrame(self.sidebar, fg_color="transparent", height=44)
             row.pack(fill="x", padx=pad, pady=(SPACE[3] if i == 0 else 2, 2))
             row.pack_propagate(False)
+            kw = rail_btn_kwargs()
+            kw.update({
+                "border_width": 0,
+                "text_color": COLORS["text"],
+                "hover_color": COLORS["cyan_dim"],
+                "font": (FONT_UI, FS["sm"]),
+            })
             btn = ctk.CTkButton(
-                row, text=f"{ico}  {label}", height=40, anchor="w",
-                command=cmd, **rail_btn_kwargs(),
-            )
-            btn.configure(
-                border_width=0,
-                text_color=COLORS["text"],
-                hover_color=COLORS["cyan_dim"],
-                font=(FONT_UI, FS["sm"]),
+                row, text=f"{ico}  {label}", height=40,
+                command=cmd, **kw,
             )
             btn.pack(side="left", fill="x", expand=True)
             ctk.CTkLabel(
