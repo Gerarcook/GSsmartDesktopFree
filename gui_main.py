@@ -584,11 +584,12 @@ class App(ctk.CTk):
             padx=(SPACE[1], SPACE[3]), pady=SPACE[3],
         )
         self.right_rail.grid_propagate(False)
+        _split_kw = ghost_btn_kwargs()
+        _split_kw["font"] = (FONT_MONO, 16)
         self.split_btn = ctk.CTkButton(
             self.right_rail, text="⧉", width=28, height=36,
-            font=(FONT_MONO, 16),
             command=self.toggle_revision,
-            **ghost_btn_kwargs(),
+            **_split_kw,
         )
         self.split_btn.pack(pady=SPACE[3], padx=SPACE[1])
 
