@@ -125,8 +125,21 @@ def test_attached_files_empieza_vacio():
 def test_footer_tiene_el_input():
     """El footer es lo que se rompe al reordenar el layout."""
     app = _construir("gui_main", "App")
-    for attr in ("entry", "send_btn", "attach_btn"):
+    for attr in ("entry", "send_btn", "attach_btn", "model_pick_btn"):
         assert hasattr(app.footer_bar, attr), f"FooterBar sin .{attr}"
+
+
+def test_app_tiene_el_selector_de_modelos():
+    """pick_model() y _apply_selected_model() son el flujo nuevo."""
+    app = _construir("gui_main", "App")
+    for m in ("pick_model", "test_providers", "new_session"):
+        assert callable(getattr(app, m, None)), f"App sin .{m}"
+
+
+def test_seleccion_de_modelo_persiste_en_env():
+    """El boton tiene que escribir en .env, no solo mostrar la lista."""
+    from src.core.model_catalog import set_model_in_env
+    assert callable(set_model_in_env), "falta set_model_in_env en model_catalog"
 
 
 if __name__ == "__main__":

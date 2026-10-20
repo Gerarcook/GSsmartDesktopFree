@@ -20,6 +20,9 @@ ROOT = HERE.parent
 TESTS = [
     ("Parser de streaming", "test_stream_parser.py"),
     ("Contexto de adjuntos", "test_file_context.py"),
+    ("Sesion / historial", "test_session.py"),
+    ("Catalogo de modelos", "test_model_catalog.py"),
+    ("Registro de proveedores", "test_config.py"),
     ("Smoke de GUIs", "test_smoke_gui.py"),
 ]
 

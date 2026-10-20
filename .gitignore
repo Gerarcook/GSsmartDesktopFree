@@ -3,6 +3,10 @@ venv/
 __pycache__/
 *.pyc
 
+# Fixtures temporales que generan los tests al correr y borran al terminar.
+# No deben versionarse: ensucian cada commit con archivos que no son producto.
+tests/_tmp_fixtures/
+
 # Claves y secretos
 .env
 

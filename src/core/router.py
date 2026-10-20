@@ -9,10 +9,22 @@ Tareas:
 """
 
 import asyncio
-from typing import Any, AsyncIterator, List, Optional
+import sys
+from typing import Any, AsyncIterator, List, Optional, Tuple
 
 from src.providers.base_provider import BaseProvider
 from src.core import config
+
+# Los prints de diagnostico de este modulo necesitan UTF-8. La consola de
+# Windows usa cp1252 y un proveedor que responda con un emoji (hola 👋)
+# reventaba con UnicodeEncodeError. errors="replace" degrada en vez de morir.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        # Sin reconfigure: puede ser un stream que no lo soporta (pytest,
+        # notebooks, o stdout redirigido en Windows viejo).
+        pass
 
 
 class ProviderRouter:
@@ -95,10 +107,13 @@ class ProviderRouter:
         for name in targets:
             try:
                 chunks: List[str] = []
-                async for piece in self.generate_stream(
+                async for kind, piece in self.generate_stream(
                     composed, provider=name, system_prompt=system_prompt, **kwargs
                 ):
-                    chunks.append(piece)
+                    # El razonamiento no va a la respuesta: se muestra aparte
+                    # en la UI pero el usuario lee solo el content.
+                    if kind == "content":
+                        chunks.append(piece)
                 text = "".join(chunks).strip()
                 if text:
                     return text
@@ -122,8 +137,13 @@ class ProviderRouter:
         system_prompt: str = "You are a helpful assistant.",
         file_context: Optional[str] = None,
         **kwargs: Any,
-    ) -> AsyncIterator[str]:
-        """Igual que generate pero con streaming (va devolviendo texto por partes)."""
+    ) -> AsyncIterator[Tuple[str, str]]:
+        """Igual que generate pero con streaming.
+
+        Yield de tuplas (tipo, texto): ("content", ...) o ("reasoning", ...).
+        Ver BaseProvider.generate_stream() para el detalle de por que se
+        separan en vez de mezclarse.
+        """
         if not provider and not self.providers:
             raise RuntimeError("No hay proveedores configurados.")
         name = provider or self.providers[0]

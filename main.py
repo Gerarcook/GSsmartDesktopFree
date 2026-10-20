@@ -7,6 +7,17 @@ Ejecuta:  python main.py
 import asyncio
 import sys
 
+# La consola de Windows usa cp1252 por defecto y NO puede imprimir emojis ni
+# caracteres CJK. Cualquier respuesta con un emoji (hola 👋) reventaba con
+#   UnicodeEncodeError: 'charmap' codec can't encode character
+# MEDIDO oct-2026 con hcnsec/Qwen3.8-Flash-Next, que responde con emojis.
+# errors="replace" evita el crash: muestra '?' en vez de morir.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except AttributeError:
+    pass  # Python < 3.7
+
 from src.core.router import ProviderRouter
 
 

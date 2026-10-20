@@ -17,7 +17,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.providers.base_provider import parse_stream_line
+from src.providers.base_provider import (
+    parse_stream_line,
+    split_reasoning,
+    is_reasoning,
+)
 
 
 def test_keepalive_no_es_contenido():
@@ -65,6 +69,66 @@ def test_delta_content_vacio_no_rompe():
         '"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}'
     )
     assert parse_stream_line(line) == ""
+
+
+def test_reasoning_no_se_confunde_con_respuesta_vacia():
+    """Los modelos de razonamiento emiten delta.reasoning antes de content.
+
+    Payload REAL de hcnsec/auto -> sensenova-6.8-flash-lite. Sin esto, con
+    max_tokens chico el modelo gasta todo el presupuesto pensando, nunca
+    llega content, y el router reporta "200 pero sin contenido".
+    """
+    line = (
+        'data: {"id":"x","object":"chat.completion.chunk","created":1,'
+        '"model":"sensenova-6.8-flash-lite","choices":[{"index":0,'
+        '"delta":{"reasoning":"Thinking Process: 1. Analyze the Request"}}]}'
+    )
+    razon, texto = split_reasoning(parse_stream_line(line))
+    assert texto == "", "el razonamiento NUNCA debe salir como contenido"
+    assert razon == "Thinking Process: 1. Analyze the Request", (
+        "el razonamiento debe transportarse para que la UI lo muestre"
+    )
+
+
+def test_reasoning_marcado_luego_content_normal():
+    """Despues del razonamiento, el contenido vuelve a ser texto normal."""
+    razon = (
+        'data: {"id":"x","object":"chat.completion.chunk","created":1,'
+        '"model":"m","choices":[{"index":0,"delta":{"reasoning":" Thinking"}}]}'
+    )
+    texto = (
+        'data: {"id":"x","object":"chat.completion.chunk","created":1,'
+        '"model":"m","choices":[{"index":0,"delta":{"content":"Hola"}}]}'
+    )
+    r1, t1 = split_reasoning(parse_stream_line(razon))
+    r2, t2 = split_reasoning(parse_stream_line(texto))
+    assert (r1, t1) == (" Thinking", "")
+    assert (r2, t2) == ("", "Hola")
+
+
+def test_content_manda_sobre_reasoning_si_vienen_juntos():
+    line = (
+        'data: {"id":"x","object":"chat.completion.chunk","created":1,'
+        '"choices":[{"index":0,"delta":{"reasoning":"a","content":"Hola"}}]}'
+    )
+    razon, texto = split_reasoning(parse_stream_line(line))
+    assert texto == "Hola", "el content real debe ganar"
+    assert razon == ""
+
+
+def test_is_reasoning():
+    linea_razon = (
+        'data: {"id":"x","object":"chat.completion.chunk","created":1,'
+        '"choices":[{"index":0,"delta":{"reasoning":"pensando"}}]}'
+    )
+    linea_texto = (
+        'data: {"id":"x","object":"chat.completion.chunk","created":1,'
+        '"choices":[{"index":0,"delta":{"content":"Hola"}}]}'
+    )
+    assert is_reasoning(parse_stream_line(linea_razon)) is True
+    assert is_reasoning(parse_stream_line(linea_texto)) is False
+    assert is_reasoning("") is False
+    assert is_reasoning(None) is False
 
 
 if __name__ == "__main__":

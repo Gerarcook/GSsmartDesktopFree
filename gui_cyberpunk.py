@@ -252,6 +252,7 @@ class CyberpunkHUD(ctk.CTk):
         self._scan_x = 0
         self._blink = False
         self._thinking_step = 0
+        self._thinking_text = ""
 
         self._init_router()
 
@@ -268,6 +269,7 @@ class CyberpunkHUD(ctk.CTk):
 
         self._animate_scan()
         self._animate_status()
+        self._animate_voice()
         self._update_telemetry()
         self._drain_ui_queue()
 
@@ -383,18 +385,46 @@ class CyberpunkHUD(ctk.CTk):
             self.root_frame, fg_color=COLORS["panel"], corner_radius=10,
             border_width=1, border_color=COLORS["cyan_dim"], height=58,
         )
-        header.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 14))
+        header.grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 14))
+        # brand | hueco | busqueda | hueco | onda | estado
+        # Los dos huecos con weight=1 son lo que mantiene la busqueda centrada
+        # sin calcular pixeles cada vez que cambia el ancho de la ventana.
         header.grid_columnconfigure(1, weight=1)
+        header.grid_columnconfigure(3, weight=1)
 
         brand = ctk.CTkFrame(header, fg_color="transparent")
         brand.grid(row=0, column=0, padx=18, pady=10, sticky="w")
-        ctk.CTkLabel(brand, text="◈ GSSMART", font=(FONT, 20, "bold"),
+        ctk.CTkLabel(brand, text="GSsmart Desktop AI", font=(FONT, 18, "bold"),
                      text_color=COLORS["cyan"]).pack(side="left")
-        ctk.CTkLabel(brand, text="  NEURAL//CHAT", font=(FONT, 12),
-                     text_color=COLORS["text_muted"]).pack(side="left", pady=(4, 0))
+        ctk.CTkLabel(brand, text="  GSsmartDesing", font=(FONT, 10),
+                     text_color=COLORS["text_muted"]).pack(side="left", pady=(6, 0))
 
-        self.scan_canvas = tk.Canvas(header, height=4, bg=COLORS["panel"], highlightthickness=0, bd=0)
-        self.scan_canvas.grid(row=0, column=1, sticky="ew", padx=10)
+        # --- Barra "Busqueda Web" centrada ---
+        search_wrap = ctk.CTkFrame(header, fg_color=COLORS["bg"], corner_radius=18,
+                                   border_width=1, border_color=COLORS["cyan_dim"],
+                                   height=34, width=300)
+        search_wrap.grid(row=0, column=2, pady=12)
+        search_wrap.grid_propagate(False)
+        ctk.CTkLabel(search_wrap, text="Q", font=(FONT, 13, "bold"),
+                     text_color=COLORS["cyan_mid"]).pack(side="left", padx=(14, 6))
+        self.search_entry = ctk.CTkEntry(search_wrap, placeholder_text="Búsqueda Web",
+                                         height=24, font=(FONT, 11),
+                                         fg_color="transparent", border_width=0,
+                                         text_color=COLORS["text"],
+                                         placeholder_text_color=COLORS["text_dim"])
+        self.search_entry.pack(side="left", fill="both", expand=True, padx=(0, 12))
+
+        # --- Onda de voz, arriba a la derecha ---
+        wave_wrap = ctk.CTkFrame(header, fg_color=COLORS["bg"], corner_radius=8,
+                                 border_width=1, border_color=COLORS["cyan_dim"],
+                                 height=34, width=118)
+        wave_wrap.grid(row=0, column=4, padx=(0, 12), pady=12)
+        wave_wrap.grid_propagate(False)
+        self.voice_canvas = tk.Canvas(wave_wrap, height=20, width=96,
+                                      bg=COLORS["bg"], highlightthickness=0, bd=0)
+        self.voice_canvas.pack(pady=7)
+        self.voice_bars = [0.05] * 14
+        self.voice_active = False
 
         status = ctk.CTkFrame(header, fg_color=COLORS["bg"], corner_radius=6,
                               border_width=1, border_color=COLORS["cyan_dim"])
@@ -404,6 +434,48 @@ class CyberpunkHUD(ctk.CTk):
         self.status_text = ctk.CTkLabel(status, text="ENLACE ACTIVO", font=(FONT, 10, "bold"),
                                         text_color=COLORS["text"])
         self.status_text.pack(side="left", padx=(0, 10), pady=4)
+
+        # Franja de escaneo: es la linea luminosa que anima _animate_scan.
+        # Va pegada al borde inferior de la cabecera para no comerse alto.
+        self.scan_canvas = tk.Canvas(header, height=3, bg=COLORS["panel"],
+                                     highlightthickness=0, bd=0)
+        self.scan_canvas.place(x=0, y=55, relwidth=1)
+
+    # ------------------------------------------------------------
+    # ANIMACION DE LA ONDA DE VOZ
+    # ------------------------------------------------------------
+
+    def _set_voice_active(self, value: bool) -> None:
+        """Enciende/apaga la onda. Se llama al empezar y al terminar de generar."""
+        self.voice_active = bool(value)
+
+    def _animate_voice(self) -> None:
+        """Barras que suben y bajan. Solo se mueven cuando hay voz.
+
+        Apagada, las barras decaen a una linea de reposo: el modulo se ve
+        vivo sin sugerir que hay audio sonando.
+        """
+        import random
+        c = self.voice_canvas
+        c.delete("all")
+        h, n = 20, len(self.voice_bars)
+        gap, bw = 98 / n, 4.0
+
+        for i in range(n):
+            if self.voice_active:
+                self.voice_bars[i] = min(1.0, max(0.08,
+                                         self.voice_bars[i] + random.uniform(-0.28, 0.34)))
+            else:
+                self.voice_bars[i] = max(0.05, self.voice_bars[i] - 0.12)
+            bh = max(2.0, self.voice_bars[i] * (h - 3))
+            x = i * gap + (gap - bw) / 2
+            color = COLORS["cyan"] if self.voice_active else COLORS["cyan_dim"]
+            c.create_rectangle(x, (h - bh) / 2, x + bw, (h + bh) / 2,
+                               fill=color, outline="")
+
+        # Mas rapido que el resto de las animaciones: la onda tiene que verse
+        # continua, no dar saltos. En reposo va mas lento para no quemar CPU.
+        self._schedule("voice", 60 if self.voice_active else 220, self._animate_voice)
 
     # ------------------------------------------------------------
     # BARRA LATERAL: PROVEEDORES
@@ -587,7 +659,15 @@ class CyberpunkHUD(ctk.CTk):
         if self.is_generating:
             self._thinking_step = (self._thinking_step + 1) % 4
             bars = "▮" * (self._thinking_step + 1) + "▯" * (3 - self._thinking_step)
-            self.thinking_label.configure(text=f"{self.current_provider} decodificando señal {bars}")
+            # Si el modelo esta emitiendo razonamiento, mostramos eso: es
+            # informacion real en vez de una animacion vacia. Los modelos
+            # de razonamiento pueden tardar 40s antes del primer token.
+            if self._thinking_text:
+                self.thinking_label.configure(text=self._thinking_text)
+            else:
+                self.thinking_label.configure(
+                    text=f"{self.current_provider} decodificando señal {bars}"
+                )
         else:
             self.thinking_label.configure(text="")
         self._schedule("status", 450, self._animate_status)
@@ -696,16 +776,25 @@ class CyberpunkHUD(ctk.CTk):
     ) -> None:
         got_text = False
         try:
-            async for chunk in self.router.generate_stream(
+            async for kind, piece in self.router.generate_stream(
                 prompt, provider=provider, system_prompt=SYSTEM_PROMPT, history=history
             ):
-                # generate_stream ya filtra los keepalive del gateway, asi que
-                # el primer chunk CON TEXTO es el primer token real del modelo.
-                # Antes se media el keepalive y la latencia daba ~0ms.
+                if kind == "reasoning":
+                    # El modelo esta pensando. Se muestra como feedback pero
+                    # NUNCA entra en la respuesta: con hcnsec/auto son ~1250
+                    # chars antes de la primera palabra visible.
+                    self._post(self._set_thinking, piece)
+                    continue
+
+                # Primer chunk de TEXTO = primer token real. Antes se media
+                # el keepalive y la latencia daba ~0ms.
                 if not got_text:
                     got_text = True
                     self._post(self._set_latency, started)
-                self._post(self._append_chunk, bubble, chunk)
+                    self._post(self._clear_thinking)
+                self._post(self._append_chunk, bubble, piece)
+            if not got_text:
+                self._post(self._clear_thinking)
             self._post(self._finish_generation, bubble, None, got_text)
         except asyncio.CancelledError:
             raise
@@ -727,6 +816,19 @@ class CyberpunkHUD(ctk.CTk):
 
     def _set_latency(self, started: float) -> None:
         self.last_latency_ms = int((time.perf_counter() - started) * 1000)
+
+    def _set_thinking(self, piece: str) -> None:
+        """Guarda el razonamiento del modelo para mostrarlo como feedback.
+
+        Se acumula y se muestra la parte final, que es donde esta el
+        "que estoy a punto de responder". Sin esto, con hcnsec/auto el
+        usuario mira un chat congelado hasta 40s.
+        """
+        self._thinking_text = (self._thinking_text + piece).strip()
+        self._thinking_text = " ".join(self._thinking_text.split())[-150:]
+
+    def _clear_thinking(self) -> None:
+        self._thinking_text = ""
 
     def _append_chunk(self, bubble: MessageBubble, chunk: str) -> None:
         """Acumula pedazos y los vuelca cada STREAM_FLUSH_MS para no redibujar por token."""
@@ -790,6 +892,10 @@ class CyberpunkHUD(ctk.CTk):
             text="EN CURSO..." if value else "TRANSMITIR",
             fg_color=COLORS["cyan_dim"] if value else COLORS["cyan"],
         )
+        # La onda de voz se mueve mientras el modelo responde: es la unica
+        # senal de que algo esta pasando, porque el streaming de texto en
+        # algunas respuestas tarda en emitir el primer token.
+        self._set_voice_active(value)
 
     def _clear_chat(self) -> None:
         if self.is_generating:

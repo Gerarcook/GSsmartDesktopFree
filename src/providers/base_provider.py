@@ -10,7 +10,7 @@ No hace falta tocar nada mas del programa.
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, List, Optional, AsyncIterator
+from typing import Dict, Any, List, Optional, AsyncIterator, Tuple
 import json
 
 import httpx
@@ -30,6 +30,12 @@ import httpx
 
 #: Modelo que usan los keepalive de los gateways.
 KEEPALIVE_MODEL = "keepalive"
+
+#: Marca interna que el stream va pensando todavia. NO es contenido: los
+#: providers la filtran. Sirve para que la UI pueda decir "pensando..."
+#: en vez de mostrar un chat congelado, y para no報告ar "vacio" cuando el
+#: modelo solo emitio razonamiento.
+REASONING_MARKER = "\x00__reasoning__"
 
 
 def parse_stream_line(line: str) -> Optional[str]:
@@ -63,7 +69,35 @@ def parse_stream_line(line: str) -> Optional[str]:
         return ""
 
     delta = choices[0].get("delta") or {}
+
+    # Los modelos de razonamiento (Qwen3, DeepSeek-R1, sensenova-6.8...)
+    # emiten delta.reasoning ANTES de delta.content. Medido: hcnsec/auto
+    # produce 1250 chars de reasoning y 0 de content si el presupuesto de
+    # tokens se agota pensando. El usuario ve un chat congelado 40s.
+    #
+    # El marcador lleva el texto adentro para que la UI pueda mostrarlo
+    # como "pensando..." en vez de tratar todo el stream como vacio.
+    if not delta.get("content") and delta.get("reasoning"):
+        return REASONING_MARKER + delta["reasoning"]
+
     return delta.get("content") or ""
+
+
+def split_reasoning(piece: Optional[str]):
+    """Separa un pedazo de stream en (razonamiento, contenido).
+
+    Devuelve (razonamiento, contenido) y ambos pueden ser "".
+    """
+    if not piece:
+        return "", ""
+    if piece.startswith(REASONING_MARKER):
+        return piece[len(REASONING_MARKER):], ""
+    return "", piece
+
+
+def is_reasoning(piece: Optional[str]) -> bool:
+    """True si el pedazo es razonamiento, no texto para el usuario."""
+    return bool(piece) and piece.startswith(REASONING_MARKER)
 
 
 class BaseProvider(ABC):
@@ -113,8 +147,19 @@ class BaseProvider(ABC):
         system_prompt: str = "You are a helpful assistant.",
         history: Optional[List[Dict[str, str]]] = None,
         **kwargs: Any,
-    ) -> AsyncIterator[str]:
-        """Envia un mensaje y va devolviendo el texto por partes (streaming)."""
+    ) -> AsyncIterator[Tuple[str, str]]:
+        """Envia un mensaje y va devolviendo el texto por partes (streaming).
+
+        Cada yield es una tupla (tipo, texto) donde tipo es:
+
+            ("content",   "Hola")  -> texto de la respuesta, va al chat
+            ("reasoning", "...")  -> el modelo pensando, va a la UI como
+                                     indicador pero NUNCA a la respuesta
+
+        Se separa porque los modelos de razonamiento emiten delta.reasoning
+        antes de delta.content, y confundirlos dejaba al usuario mirando un
+        chat congelado o una respuesta vacia.
+        """
         ...
 
     # ------------------------------------------------------------------

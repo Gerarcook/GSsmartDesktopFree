@@ -13,9 +13,9 @@ solo crea una clase nueva heredando de BaseProvider con la
 misma logica pero el payload de ese proveedor.
 """
 
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
-from .base_provider import BaseProvider, parse_stream_line
+from .base_provider import BaseProvider, parse_stream_line, split_reasoning
 
 
 class CustomProvider(BaseProvider):
@@ -48,7 +48,7 @@ class CustomProvider(BaseProvider):
         system_prompt: str = "You are a helpful assistant.",
         history: Optional[List[Dict[str, str]]] = None,
         **kwargs: Any,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[Tuple[str, str]]:
         messages = self.build_messages(prompt, system_prompt, history)
         payload = {"model": self.model, "messages": messages, "stream": True, **kwargs}
 
@@ -58,8 +58,13 @@ class CustomProvider(BaseProvider):
                 piece = parse_stream_line(line)
                 if piece is None:  # [DONE] -> fin del stream
                     break
-                if piece:
-                    yield piece
+                # El razonamiento viaja aparte: la UI lo muestra como
+                # "pensando..." y nunca lo mete en la respuesta.
+                razon, texto = split_reasoning(piece)
+                if razon:
+                    yield ("reasoning", razon)
+                elif texto:
+                    yield ("content", texto)
 
     # ------------------------------------------------------------------
     async def get_available_models(self) -> List[str]:
