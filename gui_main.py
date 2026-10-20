@@ -377,6 +377,11 @@ class App(ctk.CTk):
         # GUIs pueden reutilizarla.
         self.conversation: List[Dict[str, str]] = []
 
+        # Scroll: follow=True mientras el usuario no se mueva arriba a mano.
+        # _scroll_job coalesca updates del stream.
+        self._scroll_follow = True
+        self._scroll_job = None
+
         # Layout Grid Principal
         #   col 0 = sidebar | col 1 = settings | col 2 = contenido
         #   row 0 = top_bar | row 1 = editor_area | row 2 = footer_bar
@@ -407,6 +412,16 @@ class App(ctk.CTk):
 
         self.editor_area = EditorArea(self)
         self.editor_area.grid(row=1, column=2, sticky="nsew", padx=SPACE[2], pady=SPACE[2])
+        # Si el usuario sube el scroll a mano, no lo arrastramos de vuelta.
+        # Al volver cerca del fondo, reactivamos follow.
+        try:
+            canvas = self.editor_area.chat_area._parent_canvas
+            canvas.bind("<MouseWheel>", self._on_chat_user_scroll, add="+")
+            canvas.bind("<Button-4>", self._on_chat_user_scroll, add="+")
+            canvas.bind("<Button-5>", self._on_chat_user_scroll, add="+")
+            canvas.bind("<ButtonPress-1>", self._on_chat_user_scroll, add="+")
+        except Exception:
+            pass
 
         self.footer_bar = FooterBar(
             self, on_send=self.send_message, on_attach=self.attach_files,
@@ -607,15 +622,75 @@ class App(ctk.CTk):
         return b
 
     def _scroll_chat_to_bottom(self) -> None:
-        """Baja al ultimo mensaje.
+        """Baja al ultimo mensaje (siempre, p.ej. al agregar burbuja nueva)."""
+        self._scroll_follow = True
+        self._schedule_scroll(immediate=True)
 
-        CTkScrollableFrame no expone see(): hay que ir al Canvas de Tk que
-        tiene por dentro. after_idle espera al recalculo del layout, si se
-        llama directo el scroll no llega al fondo porque las burbujas todavia
-        no tienen altura definitiva.
+    def _request_stream_scroll(self) -> None:
+        """Scroll durante streaming: coalescido (~50ms) para no saturar Tk.
+
+        Cada token llamaba yview_moveto antes de que el label creciera y el
+        canvas actualizara scrollregion → el chat se quedaba quieto a mitad.
         """
-        area = self.editor_area
-        self.after_idle(lambda: area.chat_area._parent_canvas.yview_moveto(1.0))
+        if not getattr(self, "_scroll_follow", True):
+            return
+        self._schedule_scroll(immediate=False)
+
+    def _schedule_scroll(self, immediate: bool = False) -> None:
+        if getattr(self, "_scroll_job", None) is not None:
+            if immediate:
+                try:
+                    self.after_cancel(self._scroll_job)
+                except Exception:
+                    pass
+                self._scroll_job = None
+            else:
+                return  # ya hay uno pendiente: coalescer
+        delay = 0 if immediate else 50
+        self._scroll_job = self.after(delay, self._do_scroll_to_bottom)
+
+    def _do_scroll_to_bottom(self) -> None:
+        """Fuerza layout + scrollregion y mueve al fondo.
+
+        Orden critico:
+          1) update_idletasks  → el label ya tiene altura real
+          2) bbox("all")      → scrollregion cubre el contenido nuevo
+          3) yview_moveto(1)  → ahora si llega al final
+          4) after(16) reintento → segunda pasada por si el wrap de CTk
+             termina un frame tarde
+        """
+        self._scroll_job = None
+        try:
+            area = self.editor_area.chat_area
+            canvas = area._parent_canvas
+        except Exception:
+            return
+
+        def _apply(retry: bool = True) -> None:
+            try:
+                area.update_idletasks()
+                bbox = canvas.bbox("all")
+                if bbox:
+                    canvas.configure(scrollregion=bbox)
+                canvas.yview_moveto(1.0)
+                if retry:
+                    # Segunda pasada: wraplength/fuente a veces redimensionan
+                    # un frame despues del primer update_idletasks.
+                    self.after(16, lambda: _apply(retry=False))
+            except Exception:
+                pass
+
+        _apply(retry=True)
+
+    def _on_chat_user_scroll(self, _event=None) -> None:
+        """Si el usuario se aleja del fondo, pausa auto-scroll; si vuelve, reanuda."""
+        try:
+            canvas = self.editor_area.chat_area._parent_canvas
+            # yview() -> (top, bottom) fracciones 0..1
+            _top, bottom = canvas.yview()
+            self._scroll_follow = bottom >= 0.92
+        except Exception:
+            self._scroll_follow = True
 
     def _append_chat(self, line):
         """Mensaje de sistema con formato viejo ("[IA]: ...").
@@ -799,7 +874,7 @@ class App(ctk.CTk):
                                 self.after(0, ai_bubble.set_text, piece)
                             else:
                                 self.after(0, ai_bubble.append, piece)
-                            self.after(0, self._scroll_chat_to_bottom)
+                            self.after(0, self._request_stream_scroll)
                         else:
                             self.after(0, self._on_reasoning, piece)
                     return "".join(partes).strip()
@@ -841,6 +916,7 @@ class App(ctk.CTk):
                     ai_bubble.set_text(response)
             except Exception:
                 pass
+        self._scroll_chat_to_bottom()
         self._update_session_info()
 
     def _update_session_info(self):
