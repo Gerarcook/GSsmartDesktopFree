@@ -65,11 +65,11 @@ DIM = {
 
 
 def glass_panel_kwargs() -> dict:
-    """Marco de módulo flotante (borde neón)."""
+    """Marco de módulo flotante (borde neón grueso, estilo mockup)."""
     return {
         "fg_color": COLORS["panel"],
         "corner_radius": RADIUS_PANEL,
-        "border_width": 1,
+        "border_width": 2,
         "border_color": COLORS["border_glow"],
     }
 

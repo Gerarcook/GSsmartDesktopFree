@@ -18,8 +18,9 @@ class MessageBubble(ctk.CTkFrame):
 
     # (label, accent, background)
     STYLES = {
-        "user": ("OPERADOR", COLORS["cyan"], DIM["user_bubble"]),
-        "ai": ("GSSMART", COLORS["green"], DIM["ai_bubble"]),
+        # Mockup: bordes cian en ambas; user relleno cyan, AI panel oscuro
+        "user": ("OPERADOR", COLORS["cyan"], COLORS["cyan_dim"]),
+        "ai": ("GSSMART", COLORS["cyan"], COLORS["panel_raised"]),
         "system": ("SISTEMA", COLORS["text_muted"], COLORS["bg"]),
         "error": ("ERROR", COLORS["magenta"], COLORS["magenta_dim"]),
     }
@@ -32,7 +33,7 @@ class MessageBubble(ctk.CTkFrame):
             fg_color=bg,
             corner_radius=RADIUS_PANEL,
             border_width=1,
-            border_color=border,
+            border_color=COLORS["border_glow"] if sender != "error" else border,
         )
         self.sender = sender
         self.text = text
