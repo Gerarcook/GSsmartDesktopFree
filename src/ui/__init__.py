@@ -2,13 +2,13 @@
 
 from src.ui.theme import (
     COLORS, FONT_MONO, FONT_UI, RADIUS_PANEL, RADIUS_FIELD, RADIUS_PILL,
-    DIM, FS, SPACE, mix, ghost_btn_kwargs, primary_btn_kwargs, rail_btn_kwargs,
+    DIM, FS, SPACE, mix, ghost_btn_kwargs, primary_btn_kwargs, rail_btn_kwargs, glass_panel_kwargs,
 )
 
 __all__ = [
     "COLORS", "FONT_MONO", "FONT_UI", "RADIUS_PANEL", "RADIUS_FIELD",
     "RADIUS_PILL", "DIM", "FS", "SPACE", "mix",
-    "ghost_btn_kwargs", "primary_btn_kwargs", "rail_btn_kwargs",
+    "ghost_btn_kwargs", "primary_btn_kwargs", "rail_btn_kwargs", "glass_panel_kwargs",
     "MessageBubble",
 ]
 

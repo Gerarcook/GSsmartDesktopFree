@@ -18,6 +18,7 @@ from src.core.model_catalog import set_model_in_env, set_env_var
 from src.ui.theme import (
     COLORS, FONT_MONO, FONT_UI, RADIUS_PANEL, RADIUS_FIELD, RADIUS_PILL,
     DIM, FS, SPACE, ghost_btn_kwargs, primary_btn_kwargs, rail_btn_kwargs,
+    glass_panel_kwargs,
 )
 from src.ui.bubbles import MessageBubble
 
@@ -115,8 +116,7 @@ class SettingsPanel(ctk.CTkFrame):
 
     def __init__(self, master, on_saved=None):
         super().__init__(
-            master, width=340, fg_color=COLORS["panel"],
-            corner_radius=0, border_width=1, border_color=COLORS["border_glow"],
+            master, width=340, **glass_panel_kwargs(),
         )
         self.on_saved = on_saved
         self._selected: Optional[str] = None
@@ -312,33 +312,28 @@ class SettingsPanel(ctk.CTkFrame):
 
 
 class FooterBar(ctk.CTkFrame):
-    """Composer: fila 1 = input + CTA; fila 2 = toolbar ghost."""
-    def __init__(self, master, on_send, on_attach, on_model, on_pick_model=None):
-        super().__init__(
-            master, fg_color=FOOTER_BG, corner_radius=RADIUS_PANEL,
-            border_width=1, border_color=COLORS["border_glow"],
-        )
+    """Composer flotante estilo mockup: una sola pastilla horizontal."""
 
-        # row0: input | Enviar
-        # row1: toolbar full-width
-        # row2: status (razonamiento)
-        # row3: hint idle
+    def __init__(self, master, on_send, on_attach, on_model, on_pick_model=None,
+                 on_audio=None):
+        super().__init__(master, **glass_panel_kwargs())
         self.grid_columnconfigure(0, weight=1)
-        self.grid_columnconfigure(1, weight=0)
+
+        row = ctk.CTkFrame(self, fg_color="transparent")
+        row.grid(row=0, column=0, sticky="ew", padx=SPACE[3], pady=SPACE[3])
+        row.grid_columnconfigure(0, weight=1)
 
         self.entry = ctk.CTkEntry(
-            self, placeholder_text="Escribe tu mensaje aquí...",
-            height=42,
+            row, placeholder_text="Escribe tu mensaje aquí...",
+            height=40,
             fg_color=COLORS["panel_raised"],
             text_color=COLORS["text"],
             border_width=1,
             border_color=COLORS["border"],
             placeholder_text_color=COLORS["text_dim"],
+            corner_radius=RADIUS_PILL,
         )
-        self.entry.grid(
-            row=0, column=0, sticky="ew",
-            padx=(SPACE[3], SPACE[2]), pady=(SPACE[3], SPACE[2]),
-        )
+        self.entry.grid(row=0, column=0, sticky="ew", padx=(0, SPACE[2]))
         self.entry.bind("<Return>", lambda e: on_send(self.entry.get()))
         self.entry.bind(
             "<FocusIn>",
@@ -349,91 +344,72 @@ class FooterBar(ctk.CTkFrame):
             lambda _e: self.entry.configure(border_color=COLORS["border"]),
         )
 
+        ghost = ghost_btn_kwargs()
         self.send_btn = ctk.CTkButton(
-            self, text="Enviar", width=110, height=42,
+            row, text="➤", width=44, height=40,
             command=lambda: on_send(self.entry.get()),
             **primary_btn_kwargs(),
         )
-        self.send_btn.grid(
-            row=0, column=1, sticky="e",
-            padx=(0, SPACE[3]), pady=(SPACE[3], SPACE[2]),
-        )
+        self.send_btn.grid(row=0, column=1, padx=(0, SPACE[2]))
 
-        actions = ctk.CTkFrame(self, fg_color="transparent")
-        actions.grid(
-            row=1, column=0, columnspan=2, sticky="ew",
-            padx=SPACE[3], pady=(0, SPACE[2]),
-        )
-
-        ghost = ghost_btn_kwargs()
         self.attach_btn = ctk.CTkButton(
-            actions, text="📎 Adjuntar", width=110, height=32,
+            row, text="📎 Adjuntar", width=110, height=40,
             command=on_attach, **ghost,
         )
-        self.attach_btn.pack(side="left", padx=(0, SPACE[2]))
-
-        self.model_btn = ctk.CTkButton(
-            actions, text="🤖 Modelo", width=100, height=32,
-            command=on_model, **ghost,
-        )
-        self.model_btn.pack(side="left", padx=(0, SPACE[2]))
+        self.attach_btn.grid(row=0, column=2, padx=(0, SPACE[2]))
 
         self.model_pick_btn = ctk.CTkButton(
-            actions, text="Ver modelos", width=110, height=32,
-            command=on_pick_model, **ghost,
+            row, text="Modelos ▾", width=120, height=40,
+            command=on_pick_model, **primary_btn_kwargs(),
         )
-        self.model_pick_btn.pack(side="left", padx=(0, SPACE[2]))
+        self.model_pick_btn.grid(row=0, column=3, padx=(0, SPACE[2]))
+
+        self.model_btn = ctk.CTkButton(
+            row, text="Modelo", width=90, height=40,
+            command=on_model, **ghost,
+        )
+        self.model_btn.grid(row=0, column=4, padx=(0, SPACE[2]))
+
+        self.audio_btn = ctk.CTkButton(
+            row, text="🎤 Audio", width=100, height=40,
+            command=on_audio or (lambda: None), **ghost,
+        )
+        self.audio_btn.grid(row=0, column=5)
 
         self.hint_label = ctk.CTkLabel(
             self, text="Sin adjuntos · Intro para enviar",
-            font=(FONT_MONO, FS["xs"]), text_color=COLORS["text_dim"], anchor="e",
+            font=(FONT_MONO, FS["xs"]), text_color=COLORS["text_dim"], anchor="center",
         )
-        self.hint_label.grid(
-            row=3, column=0, columnspan=2, sticky="ew",
-            padx=SPACE[3], pady=(0, SPACE[1]),
-        )
+        self.hint_label.grid(row=1, column=0, sticky="ew", pady=(0, SPACE[2]))
 
     def set_busy(self, busy):
-        """Bloquea el input mientras se espera a la IA."""
         state = "disabled" if busy else "normal"
         self.entry.configure(state=state)
         self.send_btn.configure(
             state=state,
-            text="Pensando..." if busy else "Enviar",
+            text="…" if busy else "➤",
             fg_color=DIM["accent_disabled"] if busy else COLORS["cyan"],
         )
 
     def set_attached_count(self, count):
-        """Muestra cuantos archivos hay adjuntos en el boton."""
         self.attach_btn.configure(
             text=f"📎 Adjuntar ({count})" if count else "📎 Adjuntar"
         )
 
     def set_status(self, text):
-        """Barra de estado: muestra el razonamiento del modelo mientras piensa.
-
-        Los modelos de razonamiento pueden tardar 40s antes de emitir la
-        primera palabra de la respuesta. Sin esto el usuario ve un boton
-        "Pensando..." sin ningun feedback de que algo esta pasando.
-        """
         if not hasattr(self, "status_label"):
             self.status_label = ctk.CTkLabel(
                 self, text="", font=(FONT_MONO, FS["xs"]),
                 text_color=COLORS["text_dim"], anchor="w",
             )
-            self.status_label.grid(
-                row=2, column=0, columnspan=2, sticky="w", padx=SPACE[3],
-            )
-        # Razonamiento → warning (legible, no confunde con muted idle)
+            self.status_label.grid(row=2, column=0, sticky="ew", padx=SPACE[3])
         self.status_label.configure(
             text=text[:110] if text else "",
             text_color=COLORS["warning"] if text else COLORS["text_dim"],
         )
-        # El pie solo describe el estado idle. Con razonamiento en curso el
-        # texto "Intro para enviar" miente: la app esta ocupada pensando.
         if hasattr(self, "hint_label"):
             self.hint_label.configure(
-                text="" if text else f"Sin adjuntos · Intro para enviar"
+                text="" if text else "Sin adjuntos · Intro para enviar"
             )
 
 
@@ -466,47 +442,56 @@ def _dark_scrolled_text(parent, **kwargs):
 
 
 class EditorArea(ctk.CTkFrame):
-    """Área principal: chat (1fr) + review opcional (~0.4fr)."""
+    """Chat central holográfico + panel revisión (split)."""
+
     def __init__(self, master):
         super().__init__(master, fg_color="transparent")
         self.grid_columnconfigure(0, weight=1, minsize=320)
-        self.grid_columnconfigure(1, weight=0, minsize=280)
+        self.grid_columnconfigure(1, weight=0, minsize=0)
         self.grid_rowconfigure(0, weight=1)
 
-        self.chat_frame = ctk.CTkFrame(
-            self, fg_color=COLORS["panel"], corner_radius=RADIUS_PANEL,
-            border_width=1, border_color=COLORS["border_glow"],
-        )
+        self.chat_frame = ctk.CTkFrame(self, **glass_panel_kwargs())
         self.chat_frame.grid(
             row=0, column=0, sticky="nsew",
-            padx=(SPACE[2], SPACE[1]), pady=SPACE[2],
+            padx=(SPACE[2], SPACE[2]), pady=SPACE[1],
         )
+        self.chat_frame.grid_columnconfigure(0, weight=1)
+        self.chat_frame.grid_rowconfigure(1, weight=1)
+
+        # Cabecera del chat (mockup: GSsmart AI · En línea)
+        head = ctk.CTkFrame(self.chat_frame, fg_color="transparent")
+        head.grid(row=0, column=0, sticky="ew", padx=SPACE[4], pady=(SPACE[3], SPACE[1]))
+        head.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(
+            head, text="GSsmart AI", font=(FONT_MONO, FS["md"], "bold"),
+            text_color=COLORS["cyan"],
+        ).grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(
+            head, text="● En línea", font=(FONT_MONO, FS["xs"]),
+            text_color=COLORS["green"],
+        ).grid(row=0, column=1, sticky="w", padx=SPACE[2])
 
         self.chat_area = ctk.CTkScrollableFrame(
             self.chat_frame, fg_color="transparent",
-            scrollbar_button_color=COLORS["border_glow"],
+            scrollbar_button_color=COLORS["border"],
             scrollbar_button_hover_color=COLORS["cyan_mid"],
         )
-        self.chat_area.pack(fill="both", expand=True, padx=SPACE[2], pady=SPACE[2])
+        self.chat_area.grid(row=1, column=0, sticky="nsew", padx=SPACE[2], pady=(0, SPACE[2]))
         self.chat_area.grid_columnconfigure(0, weight=1)
         self.bubbles: List[MessageBubble] = []
         self.chat_area.bind("<Configure>", self._on_chat_resize)
 
-        # Review panel: en __init__ (antes vivía por error dentro del resize)
-        self.review_frame = ctk.CTkFrame(
-            self, fg_color=COLORS["panel"], corner_radius=RADIUS_PANEL,
-            border_width=1, border_color=COLORS["border_glow"],
-        )
+        self.review_frame = ctk.CTkFrame(self, **glass_panel_kwargs())
         self.review_frame.grid(
             row=0, column=1, sticky="nsew",
-            padx=(SPACE[1], SPACE[2]), pady=SPACE[2],
+            padx=(0, SPACE[2]), pady=SPACE[1],
         )
         self.review_frame.grid_remove()
         self.review_frame.grid_columnconfigure(0, weight=1)
         self.review_frame.grid_rowconfigure(1, weight=1)
 
         ctk.CTkLabel(
-            self.review_frame, text="Revisión de Código (Diff)",
+            self.review_frame, text="Área de trabajo · Diff",
             font=(FONT_MONO, FS["sm"], "bold"), text_color=COLORS["cyan"],
         ).grid(row=0, column=0, sticky="w", padx=SPACE[3], pady=(SPACE[3], SPACE[2]))
 
@@ -515,70 +500,74 @@ class EditorArea(ctk.CTkFrame):
             row=1, column=0, sticky="nsew", padx=SPACE[3], pady=(0, SPACE[3]),
         )
 
+    def set_split(self, open_: bool) -> None:
+        """Abre/cierra revisión a media pantalla (empuja el chat)."""
+        if open_:
+            self.grid_columnconfigure(0, weight=1)
+            self.grid_columnconfigure(1, weight=1, minsize=280)
+            self.review_frame.grid()
+        else:
+            self.review_frame.grid_remove()
+            self.grid_columnconfigure(1, weight=0, minsize=0)
+
     def _on_chat_resize(self, _event) -> None:
-        """Recalcula el wrap de cada burbuja al cambiar el ancho."""
         width = max(280, self.chat_area.winfo_width() - 70)
         for b in self.bubbles:
             b.set_wraplength(width)
 
 
-# -------------------------------------------------
-# 4. CLASE PRINCIPAL
-# -------------------------------------------------
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("GSsmart Desktop // Neural Chat")
+        self.title("GSsmart Desktop AI")
         self.geometry("1280x800")
         self.minsize(960, 640)
         self.configure(fg_color=COLORS["bg"], bg=COLORS["bg"])
 
-        # Archivos adjuntos del mensaje en curso.
         self.attached_files: List[str] = []
-
-        # Memoria de la conversacion. El formato de messages vive en
-        # src/core/session.py, no aca: es logica de negocio y asi las dos
-        # GUIs pueden reutilizarla.
         self.conversation: List[Dict[str, str]] = []
-
-        # Scroll: follow=True mientras el usuario no se mueva arriba a mano.
-        # _scroll_job coalesca updates del stream.
         self._scroll_follow = True
         self._scroll_job = None
         self.session_id = user_prefs.get_current_session_id() or sessions_store.new_id()
+        self._left_expanded = False  # abanico Proyectos
+        self._split_open = False
 
-        # Layout Grid Principal
-        #   col 0 = sidebar | col 1 = settings | col 2 = contenido
-        #   row 0 = top_bar | row 1 = editor_area | row 2 = footer_bar
-        self.grid_columnconfigure(0, weight=0, minsize=240)  # Sidebar
-        self.grid_columnconfigure(1, weight=0)                # Settings
-        self.grid_columnconfigure(2, weight=1)                # Content
-        self.grid_rowconfigure(0, weight=0)                   # TopBar
-        self.grid_rowconfigure(1, weight=1)                   # EditorArea <- único que crece
-        self.grid_rowconfigure(2, weight=0)                   # FooterBar
+        # Layout: col0 left rail | col1 settings | col2 content | col3 right strip
+        self.grid_columnconfigure(0, weight=0, minsize=56)
+        self.grid_columnconfigure(1, weight=0)
+        self.grid_columnconfigure(2, weight=1)
+        self.grid_columnconfigure(3, weight=0, minsize=40)
+        self.grid_rowconfigure(0, weight=0)
+        self.grid_rowconfigure(1, weight=1)
+        self.grid_rowconfigure(2, weight=0)
 
-        # --- Inicializar Componentes ---
-        self.sidebar = ctk.CTkFrame(
-            self, width=240, fg_color=COLORS["panel"], corner_radius=0,
-            border_width=1, border_color=COLORS["border"],
+        # --- Left floating module (Proyectos / Config / Ayuda) ---
+        self.sidebar = ctk.CTkFrame(self, width=56, **glass_panel_kwargs())
+        self.sidebar.grid(
+            row=0, column=0, rowspan=3, sticky="nsw",
+            padx=(SPACE[3], SPACE[1]), pady=SPACE[3],
         )
-        self.sidebar.grid(row=0, column=0, rowspan=3, sticky="nsew")
         self.sidebar.grid_propagate(False)
+        self._build_left_rail()
 
         self.settings_panel = SettingsPanel(self, on_saved=self._on_provider_settings_saved)
 
-        self.top_bar = ctk.CTkFrame(
-            self, fg_color=COLORS["panel"], height=56, corner_radius=RADIUS_PANEL,
-            border_width=1, border_color=COLORS["border"],
+        # --- Top bar (brand + search + wave + prov) ---
+        self.top_bar = ctk.CTkFrame(self, height=64, **glass_panel_kwargs())
+        self.top_bar.grid(
+            row=0, column=2, sticky="ew",
+            padx=SPACE[2], pady=(SPACE[3], SPACE[1]),
         )
-        self.top_bar.grid(row=0, column=2, sticky="ew", padx=SPACE[2], pady=(SPACE[2], 0))
         self.top_bar.grid_propagate(False)
-        self.top_bar.grid_columnconfigure(0, weight=1)
+        self.top_bar.grid_columnconfigure(2, weight=1)
+        self._build_top_bar()
 
+        # --- Editor (chat) ---
         self.editor_area = EditorArea(self)
-        self.editor_area.grid(row=1, column=2, sticky="nsew", padx=SPACE[2], pady=SPACE[2])
-        # Si el usuario sube el scroll a mano, no lo arrastramos de vuelta.
-        # Al volver cerca del fondo, reactivamos follow.
+        self.editor_area.grid(
+            row=1, column=2, sticky="nsew",
+            padx=SPACE[2], pady=SPACE[1],
+        )
         try:
             canvas = self.editor_area.chat_area._parent_canvas
             canvas.bind("<MouseWheel>", self._on_chat_user_scroll, add="+")
@@ -588,107 +577,171 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+        # --- Right strip (split-screen rail) ---
+        self.right_rail = ctk.CTkFrame(self, width=40, **glass_panel_kwargs())
+        self.right_rail.grid(
+            row=0, column=3, rowspan=3, sticky="nse",
+            padx=(SPACE[1], SPACE[3]), pady=SPACE[3],
+        )
+        self.right_rail.grid_propagate(False)
+        self.split_btn = ctk.CTkButton(
+            self.right_rail, text="⧉", width=28, height=36,
+            font=(FONT_MONO, 16),
+            command=self.toggle_revision,
+            **ghost_btn_kwargs(),
+        )
+        self.split_btn.pack(pady=SPACE[3], padx=SPACE[1])
+
+        # --- Footer composer ---
         self.footer_bar = FooterBar(
             self, on_send=self.send_message, on_attach=self.attach_files,
             on_model=self.choose_model, on_pick_model=self.pick_model,
+            on_audio=self._on_audio_stub,
         )
-        self.footer_bar.grid(row=2, column=2, sticky="ew", padx=SPACE[2], pady=(0, SPACE[2]))
+        self.footer_bar.grid(
+            row=2, column=2, sticky="ew",
+            padx=SPACE[2], pady=(SPACE[1], SPACE[3]),
+        )
 
-        # --- Sidebar brand + rail ---
+        self.after(0, self._animate_voice)
+        self.after(10, self._startup_session)
+        self.after(20, self._refresh_provider_label)
+
+    def _build_left_rail(self) -> None:
+        """Módulo izquierdo mockup: 3 entradas + abanico de proyectos."""
+        for w in self.sidebar.winfo_children():
+            w.destroy()
+
         ctk.CTkLabel(
-            self.sidebar, text="GSsmart", font=(FONT_MONO, FS["lg"], "bold"),
+            self.sidebar, text="GS", font=(FONT_MONO, FS["md"], "bold"),
             text_color=COLORS["cyan"],
-        ).pack(pady=(SPACE[5], SPACE[1]))
-        ctk.CTkLabel(
-            self.sidebar, text="DESKTOP // FREE", font=(FONT_MONO, FS["xs"]),
-            text_color=COLORS["text_dim"],
-        ).pack(pady=(0, SPACE[4]))
+        ).pack(pady=(SPACE[3], SPACE[2]))
 
-        ctk.CTkLabel(
-            self.sidebar, text="PANEL DE CONTROL", font=(FONT_MONO, FS["xs"], "bold"),
-            text_color=COLORS["text_muted"],
-        ).pack(pady=(0, SPACE[2]))
-
-        def _rail_btn(text, command):
+        def item(text, command):
             return ctk.CTkButton(
-                self.sidebar, text=text, command=command, **rail_btn_kwargs(),
+                self.sidebar, text=text, height=36, width=200 if self._left_expanded else 40,
+                command=command, **rail_btn_kwargs(),
             )
 
-        self.settings_sidebar_btn = _rail_btn("⚙  Configuración", self.toggle_settings)
-        self.settings_sidebar_btn.pack(fill="x", padx=SPACE[3], pady=SPACE[1])
+        if self._left_expanded:
+            self.sidebar.configure(width=200)
+            self.grid_columnconfigure(0, minsize=200)
+            ctk.CTkButton(
+                self.sidebar, text="📁  Proyectos  ▾", height=36,
+                command=self._toggle_left_expand, **rail_btn_kwargs(),
+            ).pack(fill="x", padx=SPACE[2], pady=2)
+            for label, cmd in (
+                ("＋  Nueva sesión", self.new_session),
+                ("☰  Cargar sesión", self.load_session_dialog),
+                ("💾  Guardar sesión", self.save_current_session),
+                ("◈  Testear conexiones", self.test_providers),
+            ):
+                ctk.CTkButton(
+                    self.sidebar, text=label, height=32,
+                    command=cmd, **ghost_btn_kwargs(),
+                ).pack(fill="x", padx=SPACE[2], pady=2)
+            ctk.CTkButton(
+                self.sidebar, text="⚙  Configuración", height=36,
+                command=self.toggle_settings, **rail_btn_kwargs(),
+            ).pack(fill="x", padx=SPACE[2], pady=(SPACE[3], 2))
+            ctk.CTkButton(
+                self.sidebar, text="?  Ayuda", height=36,
+                command=self._show_help, **rail_btn_kwargs(),
+            ).pack(fill="x", padx=SPACE[2], pady=2)
+        else:
+            self.sidebar.configure(width=56)
+            self.grid_columnconfigure(0, minsize=56)
+            ctk.CTkButton(
+                self.sidebar, text="📁", width=40, height=40,
+                command=self._toggle_left_expand, **ghost_btn_kwargs(),
+            ).pack(pady=2)
+            ctk.CTkButton(
+                self.sidebar, text="⚙", width=40, height=40,
+                command=self.toggle_settings, **ghost_btn_kwargs(),
+            ).pack(pady=2)
+            ctk.CTkButton(
+                self.sidebar, text="?", width=40, height=40,
+                command=self._show_help, **ghost_btn_kwargs(),
+            ).pack(pady=2)
 
-        self.review_sidebar_btn = _rail_btn("🧾  Revisión", self.toggle_revision)
-        self.review_sidebar_btn.pack(fill="x", padx=SPACE[3], pady=SPACE[1])
+    def _toggle_left_expand(self) -> None:
+        self._left_expanded = not self._left_expanded
+        self._build_left_rail()
 
-        self.test_sidebar_btn = _rail_btn("◈  Testear conexiones", self.test_providers)
-        self.test_sidebar_btn.pack(fill="x", padx=SPACE[3], pady=SPACE[1])
+    def _show_help(self) -> None:
+        self._append_chat(
+            "[Sistema] GSsmart Desktop AI — chat multi-proveedor.\n"
+            "PROV elige motor · Configuración edita keys · ⧉ abre área de trabajo.\n"
+            "Modelos consulta el catálogo en vivo. Intro envía."
+        )
 
-        self.new_session_btn = _rail_btn("＋  Nueva sesión", self.new_session)
-        self.new_session_btn.pack(fill="x", padx=SPACE[3], pady=SPACE[1])
+    def _on_audio_stub(self) -> None:
+        self.footer_bar.set_status("Audio: próximamente (UI lista)")
 
-        self.load_session_btn = _rail_btn("☰  Cargar sesión", self.load_session_dialog)
-        self.load_session_btn.pack(fill="x", padx=SPACE[3], pady=SPACE[1])
-
-        self.save_session_btn = _rail_btn("💾  Guardar sesión", self.save_current_session)
-        self.save_session_btn.pack(fill="x", padx=SPACE[3], pady=SPACE[1])
-
-        # --- Cabecera Superior ---
-        # col 0 = marca | col 1 = hueco | col 2 = búsqueda | col 3 = hueco
-        # col 4 = onda de voz
-        # Los huecos con weight=1 mantienen la búsqueda al centro sin calcular
-        # pixeles cada vez que se redimensiona la ventana.
-        self.top_bar.grid_columnconfigure(1, weight=1)
-        self.top_bar.grid_columnconfigure(3, weight=1)
-
+    def _build_top_bar(self) -> None:
+        # Brand
+        brand = ctk.CTkFrame(self.top_bar, fg_color="transparent")
+        brand.grid(row=0, column=0, sticky="w", padx=SPACE[4])
         ctk.CTkLabel(
-            self.top_bar, text="Editor / Chat", font=(FONT_MONO, FS["md"], "bold"),
-            text_color=COLORS["text"],
-        ).grid(row=0, column=0, sticky="w", padx=SPACE[4])
+            brand, text="GSsmart Desktop AI",
+            font=(FONT_MONO, FS["md"], "bold"), text_color=COLORS["cyan"],
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            brand, text="GSsmartDesing",
+            font=(FONT_MONO, FS["xs"]), text_color=COLORS["text_dim"],
+        ).pack(anchor="w")
 
-        # Onda de voz = única señal de "generando" (glow vivo)
+        # Search (visual; Enter muestra aviso)
+        search_wrap = ctk.CTkFrame(
+            self.top_bar, fg_color=COLORS["panel_raised"],
+            corner_radius=RADIUS_PILL, border_width=1,
+            border_color=COLORS["border_glow"], height=36, width=300,
+        )
+        search_wrap.grid(row=0, column=1, padx=SPACE[3], pady=SPACE[2])
+        search_wrap.grid_propagate(False)
+        ctk.CTkLabel(
+            search_wrap, text="⌕", font=(FONT_MONO, FS["md"]),
+            text_color=COLORS["cyan"],
+        ).pack(side="left", padx=(SPACE[3], SPACE[1]))
+        self.search_entry = ctk.CTkEntry(
+            search_wrap, placeholder_text="Búsqueda Web", height=28, width=240,
+            font=(FONT_MONO, FS["xs"]), fg_color="transparent", border_width=0,
+            text_color=COLORS["text"], placeholder_text_color=COLORS["text_dim"],
+        )
+        self.search_entry.pack(side="left", padx=(0, SPACE[2]))
+        self.search_entry.bind("<Return>", lambda _e: self._on_web_search())
+
+        # spacer
+        ctk.CTkFrame(self.top_bar, fg_color="transparent", width=8).grid(row=0, column=2)
+
+        # Wave
         self.wave_wrap = ctk.CTkFrame(
             self.top_bar, fg_color=COLORS["panel_raised"],
-            corner_radius=RADIUS_FIELD, border_width=1,
-            border_color=COLORS["border"], height=32, width=112,
+            corner_radius=RADIUS_PILL, border_width=1,
+            border_color=COLORS["border_glow"], height=36, width=140,
         )
-        self.wave_wrap.grid(row=0, column=4, padx=(0, SPACE[3]), pady=SPACE[2])
+        self.wave_wrap.grid(row=0, column=3, padx=SPACE[2], pady=SPACE[2])
         self.wave_wrap.grid_propagate(False)
         self.voice_canvas = tk.Canvas(
-            self.wave_wrap, height=18, width=92,
+            self.wave_wrap, height=20, width=120,
             bg=COLORS["panel_raised"], highlightthickness=0, bd=0,
         )
-        self.voice_canvas.pack(pady=7)
-        self.voice_bars = [0.05] * 14
+        self.voice_canvas.pack(pady=8)
+        self.voice_bars = [0.05] * 16
         self.voice_active = False
         self._voice_job = None
 
-        self.top_review_btn = ctk.CTkButton(
-            self.top_bar, text="Mostrar Revisión", width=150, height=32,
-            command=self.toggle_revision, **ghost_btn_kwargs(),
-        )
-        self.top_review_btn.grid(row=0, column=5, sticky="e", padx=(0, SPACE[2]))
-
-        # Selector de proveedor (persistido en .gssmart_prefs.json)
-        prov_wrap = ctk.CTkFrame(self.top_bar, fg_color="transparent")
-        prov_wrap.grid(row=0, column=6, sticky="e", padx=(0, SPACE[4]))
-        ctk.CTkLabel(
-            prov_wrap, text="PROV", font=(FONT_MONO, FS["xs"], "bold"),
-            text_color=COLORS["text_dim"],
-        ).pack(side="left", padx=(0, SPACE[1]))
-
-        self._provider_names = app_config.configured_providers()
-        if not self._provider_names:
-            self._provider_names = ["(sin proveedores)"]
-
+        # Provider menu
+        self._provider_names = app_config.configured_providers() or ["(sin proveedores)"]
         preferred = user_prefs.get_active_provider()
         self.active_provider = app_config.resolve_active_provider(preferred)
         if self.active_provider is None:
             self.active_provider = self._provider_names[0]
 
         self.provider_menu = ctk.CTkOptionMenu(
-            prov_wrap,
+            self.top_bar,
             values=self._provider_names,
-            width=160, height=28,
+            width=150, height=32,
             font=(FONT_MONO, FS["xs"]),
             fg_color=COLORS["panel_raised"],
             button_color=COLORS["cyan_dim"],
@@ -698,18 +751,18 @@ class App(ctk.CTk):
             text_color=COLORS["text"],
             command=self._on_provider_change,
         )
-        self.provider_menu.pack(side="left")
+        self.provider_menu.grid(row=0, column=4, padx=(SPACE[2], SPACE[4]), sticky="e")
         if self.active_provider in self._provider_names:
             self.provider_menu.set(self.active_provider)
 
-        # La arranca al final: self.after(0, ...) garantiza que el Canvas ya
-        # tiene tamano cuando corre el primer frame. Si se llama directo, el
-        # primer dibujado sale con width=1 y la onda aparece chueca un rato.
-        self.after(0, self._animate_voice)
-        self.after(10, self._startup_session)
-        self.after(20, self._refresh_provider_label)
-
-    # --- Lógica de Interacción ---
+    def _on_web_search(self) -> None:
+        q = (self.search_entry.get() or "").strip()
+        if not q:
+            return
+        self._append_chat(
+            f"[Sistema] Búsqueda Web: «{q}» — backend aún no conectado. "
+            "Usá el chat con un modelo que tenga web tool si el proveedor lo ofrece."
+        )
 
     def toggle_settings(self):
         self.settings_panel.toggle()
@@ -729,13 +782,13 @@ class App(ctk.CTk):
         self._append_chat(f"[Sistema] Proveedor actualizado: {name}")
 
     def toggle_revision(self):
-        if self.editor_area.review_frame.winfo_ismapped():
-            self.editor_area.review_frame.grid_remove()
-            self.top_review_btn.configure(text="Mostrar Revisión")
-        else:
-            self.editor_area.review_frame.grid()
-            self.top_review_btn.configure(text="Ocultar Revisión")
+        self._split_open = not self._split_open
+        self.editor_area.set_split(self._split_open)
+        if self._split_open:
+            self.split_btn.configure(fg_color=COLORS["cyan_dim"], text_color=COLORS["cyan"])
             self.editor_area.diff_widget.load_diff("", "funcion_hola() {\n  return 'Hola Mundo';\n}")
+        else:
+            self.split_btn.configure(fg_color="transparent", text_color=COLORS["text"])
 
     def _on_provider_change(self, name: str) -> None:
         """Usuario eligio proveedor en el menu. Persiste y actualiza label."""

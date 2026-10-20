@@ -1,33 +1,25 @@
 """
-Tokens visuales de GSsmart Desktop — Cyberpunk high-end.
+Tokens visuales GSsmart Desktop — Cyberpunk holográfico (mockup).
 
-Fuente UNICA de color y tipografia. Ningun widget deberia hardcodear
-un "#00E5FF": si cambia el acento, se cambia aca.
-
-Paleta (oct-2026 art direction):
-  - Fondos casi void, capas de superficie legibles
-  - Un solo neón primario (cyan) para CTA / focus
-  - Semanticos: green=AI/OK, magenta=error, amber=thinking, violet=secundario
-  - Contraste AA: text sobre surface-1 ~12:1; muted ~5.5:1
+Estética: paneles flotantes de vidrio, borde cian neón, CTA único cyan.
 """
 
 from typing import Dict
 
 
-#: Paleta cyberpunk de alta gama. Fondos fríos; acentos quirúrgicos.
 COLORS: Dict[str, str] = {
-    # Superficies
-    "bg": "#03050A",            # void / fondo ventana
-    "panel": "#0A1220",         # sidebar, cards, footer
-    "panel_raised": "#0F1A2E",  # inputs, chips, burbujas base
-    "surface_3": "#152238",     # overlays, dropdowns
-    # Bordes
-    "border": "#1A2A40",
-    "border_glow": "#0E4A55",
-    # Primario (cyan)
+    # Superficies (void + glass)
+    "bg": "#02060F",
+    "panel": "#061018",
+    "panel_raised": "#0A1A28",
+    "surface_3": "#0E2436",
+    # Bordes neón (glass edge)
+    "border": "#0A3A4A",
+    "border_glow": "#00C8E0",
+    # Primario
     "cyan": "#00E5FF",
-    "cyan_mid": "#00B4C8",
-    "cyan_dim": "#003D48",
+    "cyan_mid": "#00B8D4",
+    "cyan_dim": "#003844",
     # Semánticos
     "magenta": "#FF2D6F",
     "magenta_dim": "#4A0F28",
@@ -36,45 +28,25 @@ COLORS: Dict[str, str] = {
     "violet": "#7B61FF",
     "violet_dim": "#2A1F66",
     "warning": "#FFB020",
-    # Texto (WCAG AA sobre panel)
+    # Texto
     "text": "#E8F7FA",
-    "text_muted": "#8BA3B8",
-    "text_dim": "#4A5D72",
-    # HUD
-    "grid": "#0C1828",
+    "text_muted": "#7EB0C2",
+    "text_dim": "#3D5A6A",
+    "grid": "#071420",
 }
 
-#: Tipografia. HUD en mono; cuerpo en proporcional.
 FONT_MONO = "Consolas"
 FONT_UI = "Segoe UI"
 
-#: Escala tipografica (px) — mono/UI comparten tamaños.
-FS = {
-    "xs": 11,
-    "sm": 12,
-    "md": 14,
-    "lg": 18,
-    "xl": 24,
-}
+FS = {"xs": 11, "sm": 12, "md": 14, "lg": 18, "xl": 24}
+SPACE = {1: 4, 2: 8, 3: 12, 4: 16, 5: 24, 6: 32}
 
-#: Ritmo de spacing (px). Preferir estos sobre magics sueltos.
-SPACE = {
-    1: 4,
-    2: 8,
-    3: 12,
-    4: 16,
-    5: 24,
-    6: 32,
-}
-
-#: Radios compartidos — misma "textura" en paneles y botones.
-RADIUS_PANEL = 12
-RADIUS_FIELD = 8
+RADIUS_PANEL = 18
+RADIUS_FIELD = 12
 RADIUS_PILL = 50
 
 
 def mix(hex_a: str, hex_b: str, t: float) -> str:
-    """Interpola dos colores hex. t=0 → a, t=1 → b."""
     a = hex_a.lstrip("#")
     b = hex_b.lstrip("#")
     out = []
@@ -84,33 +56,37 @@ def mix(hex_a: str, hex_b: str, t: float) -> str:
     return "#" + "".join(f"{v:02X}" for v in out)
 
 
-#: Estados derivados (disabled / soft fills).
 DIM = {
     "accent_disabled": mix(COLORS["cyan"], COLORS["bg"], 0.55),
     "surface_disabled": mix(COLORS["panel"], COLORS["bg"], 0.5),
-    "user_bubble": mix(COLORS["cyan_dim"], COLORS["panel_raised"], 0.45),
-    "ai_bubble": mix(COLORS["green_dim"], COLORS["panel_raised"], 0.35),
+    "user_bubble": mix(COLORS["cyan_dim"], COLORS["panel_raised"], 0.4),
+    "ai_bubble": mix(COLORS["panel"], COLORS["panel_raised"], 0.5),
 }
 
 
-def ghost_btn_kwargs() -> dict:
-    """Estilo ghost: sin relleno, borde sutil, hover con tinte cyan.
+def glass_panel_kwargs() -> dict:
+    """Marco de módulo flotante (borde neón)."""
+    return {
+        "fg_color": COLORS["panel"],
+        "corner_radius": RADIUS_PANEL,
+        "border_width": 1,
+        "border_color": COLORS["border_glow"],
+    }
 
-    Un solo CTA neón (Enviar); el resto de acciones usan esto.
-    """
+
+def ghost_btn_kwargs() -> dict:
     return {
         "fg_color": "transparent",
         "hover_color": COLORS["cyan_dim"],
         "text_color": COLORS["text"],
         "border_width": 1,
-        "border_color": COLORS["border"],
+        "border_color": COLORS["border_glow"],
         "corner_radius": RADIUS_FIELD,
         "font": (FONT_MONO, FS["sm"]),
     }
 
 
 def primary_btn_kwargs() -> dict:
-    """CTA primario — el unico boton solido cyan."""
     return {
         "fg_color": COLORS["cyan"],
         "hover_color": COLORS["cyan_mid"],
@@ -121,13 +97,11 @@ def primary_btn_kwargs() -> dict:
 
 
 def rail_btn_kwargs() -> dict:
-    """Botones del sidebar: ghost full-width."""
     return {
         "fg_color": "transparent",
         "hover_color": COLORS["cyan_dim"],
-        "text_color": COLORS["text_muted"],
-        "border_width": 1,
-        "border_color": COLORS["border"],
+        "text_color": COLORS["text"],
+        "border_width": 0,
         "font": (FONT_MONO, FS["sm"]),
         "corner_radius": RADIUS_FIELD,
         "anchor": "w",
