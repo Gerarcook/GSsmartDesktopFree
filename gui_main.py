@@ -308,7 +308,8 @@ class SettingsPanel(ctk.CTkFrame):
                 names = app_config.list_providers()
                 if names:
                     self._select(names[0])
-            self.grid(row=0, column=1, rowspan=3, sticky="nsew")
+            # Debajo del header: no tapa marca / búsqueda
+            self.grid(row=1, column=1, rowspan=2, sticky="nsew", padx=SPACE[1], pady=SPACE[1])
 
 
 class FooterBar(ctk.CTkFrame):
