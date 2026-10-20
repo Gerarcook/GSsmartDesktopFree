@@ -5,6 +5,38 @@ tanto oficiales (OpenRouter, OpenAI, etc.) como personalizados
 (endpoints locales tipo LM Studio, Ollama, vLLM o cualquier API
 compatible con el formato OpenAI).
 
+## Diseño visual (cyberpunk glassmorphism)
+
+UI premium inspirada en el mockup conceptual **GSsmart Desktop AI**:
+
+| Zona | Elementos |
+|------|-----------|
+| **Header** | Marca `GSsmart Desktop AI` + `GSsmartDesing`, pastilla **Búsqueda Web**, waveform de voz |
+| **Rail izquierdo** | Módulo flotante: **Proyectos**, **Configuración**, **Ayuda** |
+| **Centro** | Panel de chat holográfico con burbujas (OPERADOR / GSSMART) |
+| **Rail derecho** | Franja estrecha dual-pane (`⧉`) que expande área de trabajo |
+| **Footer** | Input `Escribe tu mensaje aquí...`, **➤**, **Adjuntar**, **Modelos**, **Audio** |
+| **Hint** | `Sin adjuntos · Intro para enviar` |
+
+**Tokens** (`src/ui/theme.py`):
+
+- Fondo void `#02060F`, paneles glass `#061018`
+- Acento neón cian **`#00E5FF`** (bordes, CTA, glow)
+- Radios: panel 18 · field 12 · pill 50
+- Glass panels: `border_width=2`, `border_color=border_glow`
+
+Ejecutar la GUI principal:
+
+```bash
+python gui_main.py
+```
+
+HUD cyberpunk alternativo (telemetría):
+
+```bash
+python gui_cyberpunk.py
+```
+
 ## Estructura
 
 ```
@@ -28,8 +60,8 @@ GSsmartDesktopFree/
     │   └── file_context.py      # Adjuntos → texto para el prompt
     ├── providers/
     └── ui/
-        ├── theme.py             # Tokens cyberpunk
-        └── bubbles.py
+        ├── theme.py             # Tokens cyberpunk glassmorphism
+        └── bubbles.py           # Burbujas OPERADOR / GSSMART
 ```
 
 ## Cómo usar
@@ -84,24 +116,13 @@ escribir su bloque con `api_key`, `base_url` y `model` leídos del `.env`.
 
 El botón **"Ver modelos"** consulta el catálogo en vivo. No hardcodees un
 modelo en el `.env`: OmniRoute rota sus modelos gratuitos y uno que
-funciona hoy puede dar 404 mañana (medido: `cohere/north-mini-code:free`
-funcionaba hace 21h y ya no está en el catálogo).
-
-El catálogo tiene **3241 entradas** de las cuales ~1300 son chat usable. El
-filtro descarta imágenes/audio/embeddings y colapsa las variantes de
-razonamiento (`glm-5.3-flash`, `glm-5.3-flash-xhigh`, `glm-5.3-flash[1m]`
-son el mismo modelo). Los de arriba son los que más conviene probar.
+funciona hoy puede dar 404 mañana.
 
 ### "Configurado" no es "funciona"
 
-Una API key puede ser válida y la cuenta estar sin saldo. Caso real
-medido: la key de Kimi daba `GET /models` 200 pero `chat/completions` 429
-(*"account suspended due to insufficient balance"*). Nada de eso se ve
-desde la config.
-
-Por eso el botón **"Testear conexiones"** en la barra lateral hace una
-request real por proveedor y dice quién responde de verdad. También
-disponible desde código:
+Una API key puede ser válida y la cuenta estar sin saldo. Por eso el botón
+**"Testear conexiones"** en la barra lateral hace una request real por
+proveedor y dice quién responde de verdad.
 
 ```python
 from src.core import config
@@ -113,10 +134,10 @@ await config.diagnose_providers()  # prueba real (cuesta 1 request c/u)
 ## Instalacion
 
 ```bash
-cd C:\Users\Administrator\Trabajo\GSsmartDesktopFree
+cd GSsmartDesktopFree
 pip install -r requirements.txt
 copy .env.example .env   # y completa tus claves
-python main.py
+python gui_main.py
 ```
 
 ## Agregar un proveedor nuevo
@@ -144,4 +165,3 @@ Listo. La app lo detecta y lo usa sin tocar nada más.
 Si tu proveedor no es compatible con OpenAI (Anthropic, Google, etc),
 creá su clase propia heredando de `BaseProvider` — la arquitectura
 está pensada exactamente para eso.
-# GSsmartDesktopFree

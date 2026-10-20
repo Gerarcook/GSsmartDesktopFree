@@ -1,9 +1,9 @@
 """
-Burbuja de mensaje del chat — Cyberpunk high-end.
+Burbuja de mensaje del chat — Cyberpunk glassmorphism (mockup GSsmart Desktop AI).
 
-User: borde cyan + fondo teñido (operador alineado a la derecha en la GUI).
-AI:   borde green + fondo success soft.
-System / error: tonos muted / magenta.
+User: relleno cyan / borde neón, alineado a la derecha.
+AI:   body glass oscuro + borde cian, alineado a la izquierda.
+System / error: muted / magenta.
 """
 
 import time
@@ -16,24 +16,23 @@ from src.ui.theme import COLORS, FONT_MONO, FONT_UI, RADIUS_PANEL, FS, DIM
 class MessageBubble(ctk.CTkFrame):
     """Burbuja de mensaje con remitente, hora y boton COPIAR."""
 
-    # (label, accent, background)
+    # (label, accent, background) — alineado al mockup holográfico
     STYLES = {
-        # Mockup: bordes cian en ambas; user relleno cyan, AI panel oscuro
-        "user": ("OPERADOR", COLORS["cyan"], COLORS["cyan_dim"]),
-        "ai": ("GSSMART", COLORS["cyan"], COLORS["panel_raised"]),
+        "user": ("OPERADOR", COLORS["cyan"], DIM["user_bubble"]),
+        "ai": ("GSSMART", COLORS["cyan"], DIM["ai_bubble"]),
         "system": ("SISTEMA", COLORS["text_muted"], COLORS["bg"]),
         "error": ("ERROR", COLORS["magenta"], COLORS["magenta_dim"]),
     }
 
     def __init__(self, master, sender: str, text: str, wraplength: int = 600):
         label, accent, bg = self.STYLES.get(sender, self.STYLES["system"])
-        border = accent if sender != "system" else COLORS["border"]
+        border = COLORS["border_glow"] if sender != "error" else accent
         super().__init__(
             master,
             fg_color=bg,
             corner_radius=RADIUS_PANEL,
-            border_width=1,
-            border_color=COLORS["border_glow"] if sender != "error" else border,
+            border_width=1 if sender != "system" else 0,
+            border_color=border,
         )
         self.sender = sender
         self.text = text

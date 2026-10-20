@@ -1,7 +1,15 @@
 """
-Tokens visuales GSsmart Desktop — Cyberpunk holográfico (mockup).
+Tokens visuales GSsmart Desktop AI — Cyberpunk holográfico glassmorphism.
 
-Estética: paneles flotantes de vidrio, borde cian neón, CTA único cyan.
+Fuente de diseño: mockup conceptual (Grok Imagine, oct 2026)
+  - Paneles flotantes de vidrio translúcido oscuro
+  - Borde neón cian #00E5FF con soft bloom
+  - Módulos: header (marca + Búsqueda Web + waveform), rail izq
+    (Proyectos / Configuración / Ayuda), chat central, rail derecho
+    dual-pane, footer (input + Enviar / Adjuntar / Modelos / Audio)
+  - Tipografía mono limpia, sin clutter, product mockup 16:9
+
+Estética: glassmorphism premium SaaS desktop + HUD cyberpunk.
 """
 
 from typing import Dict
@@ -15,7 +23,7 @@ COLORS: Dict[str, str] = {
     "surface_3": "#0E2436",
     # Bordes neón (glass edge)
     "border": "#0A3A4A",
-    "border_glow": "#00C8E0",
+    "border_glow": "#00E5FF",   # mockup exacto
     # Primario
     "cyan": "#00E5FF",
     "cyan_mid": "#00B8D4",
@@ -59,13 +67,13 @@ def mix(hex_a: str, hex_b: str, t: float) -> str:
 DIM = {
     "accent_disabled": mix(COLORS["cyan"], COLORS["bg"], 0.55),
     "surface_disabled": mix(COLORS["panel"], COLORS["bg"], 0.5),
-    "user_bubble": mix(COLORS["cyan_dim"], COLORS["panel_raised"], 0.4),
+    "user_bubble": mix(COLORS["cyan_dim"], COLORS["panel_raised"], 0.25),
     "ai_bubble": mix(COLORS["panel"], COLORS["panel_raised"], 0.5),
 }
 
 
 def glass_panel_kwargs() -> dict:
-    """Marco de módulo flotante (borde neón grueso, estilo mockup)."""
+    """Marco de módulo flotante holográfico (borde neón, glass body)."""
     return {
         "fg_color": COLORS["panel"],
         "corner_radius": RADIUS_PANEL,
