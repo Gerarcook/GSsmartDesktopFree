@@ -44,15 +44,15 @@ from gui_main import App  # noqa: E402  (necesita el path de arriba)
 #: Cuando agregues una GUI nueva, agregala aca. Ese es el punto: el smoke
 #: test es lo que te dice cual es la buena cuando tenias varias.
 GUIS = [
-    ("gui_main", "App"),
+    ("gui_main", "App"),  # producto principal
+    # gui_cyberpunk: HUD opcional con telemetria (no es entrypoint del producto)
     ("gui_cyberpunk", "CyberpunkHUD"),
 ]
 
 #: Metodos que App DEBE tener para que los callbacks del FooterBar resuelvan.
-#: Es el chequeo que habria atrapado el bug de choose_model.
 CALLBACKS_REQUERIDOS = [
     "send_message", "attach_files", "choose_model",
-    "toggle_audio", "clear_attachments",
+    "clear_attachments", "load_session_dialog", "save_current_session",
 ]
 
 

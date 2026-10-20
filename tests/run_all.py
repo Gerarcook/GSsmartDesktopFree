@@ -23,6 +23,8 @@ TESTS = [
     ("Sesion / historial", "test_session.py"),
     ("Catalogo de modelos", "test_model_catalog.py"),
     ("Registro de proveedores", "test_config.py"),
+    ("Persistencia de chats", "test_sessions_store.py"),
+    ("Escritura .env (UI)", "test_env_write.py"),
     ("Smoke de GUIs", "test_smoke_gui.py"),
 ]
 

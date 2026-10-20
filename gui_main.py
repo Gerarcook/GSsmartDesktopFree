@@ -13,7 +13,8 @@ from src.core import session as session_lib
 from src.core import model_catalog
 from src.core import config as app_config
 from src.core import prefs as user_prefs
-from src.core.model_catalog import set_model_in_env
+from src.core import sessions_store
+from src.core.model_catalog import set_model_in_env, set_env_var
 from src.ui.theme import (
     COLORS, FONT_MONO, FONT_UI, RADIUS_PANEL, RADIUS_FIELD, RADIUS_PILL,
     DIM, FS, SPACE, ghost_btn_kwargs, primary_btn_kwargs, rail_btn_kwargs,
@@ -110,38 +111,209 @@ class DiffText(tk_st.ScrolledText):
 # 3. CLASES DE LA INTERFAZ
 # -------------------------------------------------
 class SettingsPanel(ctk.CTkFrame):
-    """Panel lateral desplegable."""
-    def __init__(self, master, on_option_click):
-        super().__init__(master, width=280, fg_color=COLORS["panel"],
-                         corner_radius=0, border_width=1, border_color=COLORS["border_glow"])
-        self.on_option_click = on_option_click
-        self.grid_remove()  # Oculto por defecto
+    """Panel lateral: editar api_key / base_url / model por proveedor."""
+
+    def __init__(self, master, on_saved=None):
+        super().__init__(
+            master, width=340, fg_color=COLORS["panel"],
+            corner_radius=0, border_width=1, border_color=COLORS["border_glow"],
+        )
+        self.on_saved = on_saved
+        self._selected: Optional[str] = None
+        self.grid_remove()
 
         self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(2, weight=1)
 
         ctk.CTkLabel(
             self, text="Configuración", font=(FONT_MONO, FS["lg"], "bold"),
             text_color=COLORS["cyan"],
-        ).grid(row=0, column=0, sticky="w", padx=SPACE[4], pady=SPACE[4])
+        ).grid(row=0, column=0, sticky="w", padx=SPACE[4], pady=(SPACE[4], SPACE[1]))
 
-        options = ["Preferencias", "Apariencia", "Audio", "Modelo", "Atajos", "Privacidad", "Sistema", "Avanzado"]
-        for i, opt in enumerate(options):
-            ctk.CTkButton(
-                self, text=opt, command=lambda o=opt: self.on_option_click(o),
-                **ghost_btn_kwargs(),
-            ).grid(row=i + 1, column=0, sticky="ew", padx=SPACE[3], pady=SPACE[1])
+        ctk.CTkLabel(
+            self, text="Proveedores · keys en .env",
+            font=(FONT_MONO, FS["xs"]), text_color=COLORS["text_dim"],
+        ).grid(row=1, column=0, sticky="w", padx=SPACE[4], pady=(0, SPACE[2]))
 
-    def toggle(self):
+        # Lista de proveedores
+        self.list_frame = ctk.CTkScrollableFrame(
+            self, fg_color=COLORS["bg"], height=140,
+            scrollbar_button_color=COLORS["border_glow"],
+            scrollbar_button_hover_color=COLORS["cyan_mid"],
+        )
+        self.list_frame.grid(row=2, column=0, sticky="nsew", padx=SPACE[3], pady=SPACE[1])
+        self.list_frame.grid_columnconfigure(0, weight=1)
+
+        # Formulario
+        form = ctk.CTkFrame(self, fg_color="transparent")
+        form.grid(row=3, column=0, sticky="ew", padx=SPACE[3], pady=SPACE[2])
+        form.grid_columnconfigure(0, weight=1)
+
+        self.lbl_name = ctk.CTkLabel(
+            form, text="—", font=(FONT_MONO, FS["sm"], "bold"),
+            text_color=COLORS["text"], anchor="w",
+        )
+        self.lbl_name.grid(row=0, column=0, sticky="ew", pady=(0, SPACE[2]))
+
+        ctk.CTkLabel(form, text="BASE URL", font=(FONT_MONO, FS["xs"]),
+                     text_color=COLORS["text_muted"], anchor="w").grid(row=1, column=0, sticky="w")
+        self.entry_url = ctk.CTkEntry(
+            form, height=30, fg_color=COLORS["panel_raised"],
+            text_color=COLORS["text"], border_color=COLORS["border"],
+            placeholder_text_color=COLORS["text_dim"],
+        )
+        self.entry_url.grid(row=2, column=0, sticky="ew", pady=(0, SPACE[2]))
+
+        ctk.CTkLabel(form, text="API KEY", font=(FONT_MONO, FS["xs"]),
+                     text_color=COLORS["text_muted"], anchor="w").grid(row=3, column=0, sticky="w")
+        self.entry_key = ctk.CTkEntry(
+            form, height=30, fg_color=COLORS["panel_raised"],
+            text_color=COLORS["text"], border_color=COLORS["border"],
+            placeholder_text="(vacío = sin key / local)",
+            placeholder_text_color=COLORS["text_dim"], show="*",
+        )
+        self.entry_key.grid(row=4, column=0, sticky="ew", pady=(0, SPACE[1]))
+
+        self.btn_show_key = ctk.CTkButton(
+            form, text="Mostrar key", height=24, width=100,
+            command=self._toggle_key_visibility, **ghost_btn_kwargs(),
+        )
+        self.btn_show_key.grid(row=5, column=0, sticky="w", pady=(0, SPACE[2]))
+
+        ctk.CTkLabel(form, text="MODELO", font=(FONT_MONO, FS["xs"]),
+                     text_color=COLORS["text_muted"], anchor="w").grid(row=6, column=0, sticky="w")
+        self.entry_model = ctk.CTkEntry(
+            form, height=30, fg_color=COLORS["panel_raised"],
+            text_color=COLORS["text"], border_color=COLORS["border"],
+            placeholder_text_color=COLORS["text_dim"],
+        )
+        self.entry_model.grid(row=7, column=0, sticky="ew", pady=(0, SPACE[2]))
+
+        self.lbl_status = ctk.CTkLabel(
+            form, text="", font=(FONT_MONO, FS["xs"]),
+            text_color=COLORS["text_dim"], anchor="w", wraplength=300,
+        )
+        self.lbl_status.grid(row=8, column=0, sticky="ew", pady=(0, SPACE[1]))
+
+        actions = ctk.CTkFrame(form, fg_color="transparent")
+        actions.grid(row=9, column=0, sticky="ew", pady=(SPACE[1], SPACE[3]))
+        actions.grid_columnconfigure(0, weight=1)
+        actions.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkButton(
+            actions, text="Guardar", height=34,
+            command=self._save_current, **primary_btn_kwargs(),
+        ).grid(row=0, column=0, sticky="ew", padx=(0, SPACE[1]))
+        ctk.CTkButton(
+            actions, text="Cerrar", height=34,
+            command=self.toggle, **ghost_btn_kwargs(),
+        ).grid(row=0, column=1, sticky="ew", padx=(SPACE[1], 0))
+
+        self._key_visible = False
+        self._rebuild_list()
+
+    def _rebuild_list(self) -> None:
+        for w in self.list_frame.winfo_children():
+            w.destroy()
+        for i, name in enumerate(app_config.list_providers()):
+            cfg = app_config.get_provider_config(name)
+            ready = app_config.is_configured(name)
+            mark = "●" if ready else "○"
+            color = COLORS["green"] if ready else COLORS["text_dim"]
+            btn = ctk.CTkButton(
+                self.list_frame,
+                text=f"{mark}  {name}",
+                anchor="w", height=28,
+                font=(FONT_MONO, FS["xs"]),
+                fg_color=COLORS["cyan_dim"] if name == self._selected else "transparent",
+                hover_color=COLORS["cyan_dim"],
+                text_color=color if name != self._selected else COLORS["text"],
+                border_width=0,
+                command=lambda n=name: self._select(n),
+            )
+            btn.grid(row=i, column=0, sticky="ew", pady=1)
+
+    def _select(self, name: str) -> None:
+        self._selected = name
+        try:
+            cfg = app_config.get_provider_config(name)
+        except KeyError:
+            return
+        self.lbl_name.configure(text=name)
+        self.entry_url.delete(0, "end")
+        self.entry_url.insert(0, cfg.get("base_url") or "")
+        self.entry_key.delete(0, "end")
+        self.entry_key.insert(0, cfg.get("api_key") or "")
+        self.entry_model.delete(0, "end")
+        self.entry_model.insert(0, cfg.get("model") or "")
+        masked = app_config.mask_secret(cfg.get("api_key") or "")
+        self.lbl_status.configure(
+            text=f"key: {masked or '(vacía)'}  ·  env: {cfg.get('api_key_env') or '?'}",
+            text_color=COLORS["text_dim"],
+        )
+        self._rebuild_list()
+
+    def _toggle_key_visibility(self) -> None:
+        self._key_visible = not self._key_visible
+        self.entry_key.configure(show="" if self._key_visible else "*")
+        self.btn_show_key.configure(text="Ocultar key" if self._key_visible else "Mostrar key")
+
+    def _save_current(self) -> None:
+        name = self._selected
+        if not name:
+            self.lbl_status.configure(text="Elegí un proveedor de la lista.", text_color=COLORS["warning"])
+            return
+        url = self.entry_url.get().strip()
+        key = self.entry_key.get().strip()
+        model = self.entry_model.get().strip()
+
+        errs = []
+        for env_name, val in (
+            (app_config.base_url_env_for(name), url),
+            (app_config.api_key_env_for(name), key),
+            (app_config.model_env_for(name), model),
+        ):
+            if not env_name:
+                continue
+            ok, det = set_env_var(env_name, val, create_if_missing=True)
+            if not ok:
+                errs.append(det)
+
+        # Runtime hot apply
+        app_config.apply_provider_runtime(name, api_key=key, base_url=url, model=model)
+
+        if errs:
+            self.lbl_status.configure(
+                text="Parcial: " + "; ".join(errs)[:120],
+                text_color=COLORS["magenta"],
+            )
+        else:
+            self.lbl_status.configure(
+                text="Guardado en .env · activo en caliente",
+                text_color=COLORS["green"],
+            )
+        self._rebuild_list()
+        if self.on_saved:
+            try:
+                self.on_saved(name)
+            except Exception:
+                pass
+
+    def toggle(self) -> None:
         if self.winfo_ismapped():
             self.grid_remove()
         else:
+            self._rebuild_list()
+            if self._selected is None:
+                names = app_config.list_providers()
+                if names:
+                    self._select(names[0])
             self.grid(row=0, column=1, rowspan=3, sticky="nsew")
 
 
 class FooterBar(ctk.CTkFrame):
     """Composer: fila 1 = input + CTA; fila 2 = toolbar ghost."""
-    def __init__(self, master, on_send, on_attach, on_model, on_audio_toggle,
-                 on_pick_model=None):
+    def __init__(self, master, on_send, on_attach, on_model, on_pick_model=None):
         super().__init__(
             master, fg_color=FOOTER_BG, corner_radius=RADIUS_PANEL,
             border_width=1, border_color=COLORS["border_glow"],
@@ -211,14 +383,6 @@ class FooterBar(ctk.CTkFrame):
             command=on_pick_model, **ghost,
         )
         self.model_pick_btn.pack(side="left", padx=(0, SPACE[2]))
-
-        self.audio_switch = ctk.CTkSwitch(
-            actions, text="Audio", progress_color=COLORS["cyan"],
-            button_color=COLORS["text_muted"], button_hover_color=COLORS["text"],
-            text_color=COLORS["text_muted"], font=(FONT_MONO, FS["xs"]),
-            width=44, command=on_audio_toggle,
-        )
-        self.audio_switch.pack(side="left", padx=(SPACE[2], 0))
 
         self.hint_label = ctk.CTkLabel(
             self, text="Sin adjuntos · Intro para enviar",
@@ -381,6 +545,7 @@ class App(ctk.CTk):
         # _scroll_job coalesca updates del stream.
         self._scroll_follow = True
         self._scroll_job = None
+        self.session_id = user_prefs.get_current_session_id() or sessions_store.new_id()
 
         # Layout Grid Principal
         #   col 0 = sidebar | col 1 = settings | col 2 = contenido
@@ -400,7 +565,7 @@ class App(ctk.CTk):
         self.sidebar.grid(row=0, column=0, rowspan=3, sticky="nsew")
         self.sidebar.grid_propagate(False)
 
-        self.settings_panel = SettingsPanel(self, on_option_click=self.handle_settings_option)
+        self.settings_panel = SettingsPanel(self, on_saved=self._on_provider_settings_saved)
 
         self.top_bar = ctk.CTkFrame(
             self, fg_color=COLORS["panel"], height=56, corner_radius=RADIUS_PANEL,
@@ -425,8 +590,7 @@ class App(ctk.CTk):
 
         self.footer_bar = FooterBar(
             self, on_send=self.send_message, on_attach=self.attach_files,
-            on_model=self.choose_model, on_audio_toggle=self.toggle_audio,
-            on_pick_model=self.pick_model,
+            on_model=self.choose_model, on_pick_model=self.pick_model,
         )
         self.footer_bar.grid(row=2, column=2, sticky="ew", padx=SPACE[2], pady=(0, SPACE[2]))
 
@@ -462,6 +626,12 @@ class App(ctk.CTk):
         self.new_session_btn = _rail_btn("＋  Nueva sesión", self.new_session)
         self.new_session_btn.pack(fill="x", padx=SPACE[3], pady=SPACE[1])
 
+        self.load_session_btn = _rail_btn("☰  Cargar sesión", self.load_session_dialog)
+        self.load_session_btn.pack(fill="x", padx=SPACE[3], pady=SPACE[1])
+
+        self.save_session_btn = _rail_btn("💾  Guardar sesión", self.save_current_session)
+        self.save_session_btn.pack(fill="x", padx=SPACE[3], pady=SPACE[1])
+
         # --- Cabecera Superior ---
         # col 0 = marca | col 1 = hueco | col 2 = búsqueda | col 3 = hueco
         # col 4 = onda de voz
@@ -474,26 +644,6 @@ class App(ctk.CTk):
             self.top_bar, text="Editor / Chat", font=(FONT_MONO, FS["md"], "bold"),
             text_color=COLORS["text"],
         ).grid(row=0, column=0, sticky="w", padx=SPACE[4])
-
-        # Búsqueda Web: visual only (sin backend). Deshabilitada para no mentir.
-        search_wrap = ctk.CTkFrame(
-            self.top_bar, fg_color=COLORS["panel_raised"],
-            corner_radius=RADIUS_PILL, border_width=1,
-            border_color=COLORS["border"], height=32, width=280,
-        )
-        search_wrap.grid(row=0, column=2, pady=SPACE[2])
-        search_wrap.grid_propagate(False)
-        ctk.CTkLabel(
-            search_wrap, text="⌕", font=(FONT_MONO, FS["md"], "bold"),
-            text_color=COLORS["cyan_mid"],
-        ).pack(side="left", padx=(SPACE[3], SPACE[1]))
-        self.search_entry = ctk.CTkEntry(
-            search_wrap, placeholder_text="Búsqueda Web (próx.)", height=24, width=220,
-            font=(FONT_MONO, FS["xs"]), fg_color="transparent", border_width=0,
-            text_color=COLORS["text"], placeholder_text_color=COLORS["text_dim"],
-            state="disabled",
-        )
-        self.search_entry.pack(side="left", padx=(0, SPACE[3]))
 
         # Onda de voz = única señal de "generando" (glow vivo)
         self.wave_wrap = ctk.CTkFrame(
@@ -556,7 +706,7 @@ class App(ctk.CTk):
         # tiene tamano cuando corre el primer frame. Si se llama directo, el
         # primer dibujado sale con width=1 y la onda aparece chueca un rato.
         self.after(0, self._animate_voice)
-        self.after(10, self._welcome)
+        self.after(10, self._startup_session)
         self.after(20, self._refresh_provider_label)
 
     # --- Lógica de Interacción ---
@@ -564,8 +714,19 @@ class App(ctk.CTk):
     def toggle_settings(self):
         self.settings_panel.toggle()
 
-    def handle_settings_option(self, option):
-        print(f"Seleccionada opción de config: {option}")
+    def _on_provider_settings_saved(self, name: str) -> None:
+        names = app_config.configured_providers() or ["(sin proveedores)"]
+        self._provider_names = names
+        if hasattr(self, "provider_menu"):
+            self.provider_menu.configure(values=names)
+            if self.active_provider in names:
+                self.provider_menu.set(self.active_provider)
+            elif names and names[0] != "(sin proveedores)":
+                self.active_provider = names[0]
+                self.provider_menu.set(names[0])
+                user_prefs.set_active_provider(names[0])
+        self._refresh_provider_label()
+        self._append_chat(f"[Sistema] Proveedor actualizado: {name}")
 
     def toggle_revision(self):
         if self.editor_area.review_frame.winfo_ismapped():
@@ -575,9 +736,6 @@ class App(ctk.CTk):
             self.editor_area.review_frame.grid()
             self.top_review_btn.configure(text="Ocultar Revisión")
             self.editor_area.diff_widget.load_diff("", "funcion_hola() {\n  return 'Hola Mundo';\n}")
-
-    def toggle_audio(self):
-        print("Audio toggled")
 
     def _on_provider_change(self, name: str) -> None:
         """Usuario eligio proveedor en el menu. Persiste y actualiza label."""
@@ -717,16 +875,36 @@ class App(ctk.CTk):
             b.destroy()
         self.editor_area.bubbles.clear()
 
+    def _startup_session(self) -> None:
+        """Carga la ultima sesion si existe; si no, welcome limpio."""
+        sid = user_prefs.get_current_session_id()
+        if sid:
+            data = sessions_store.load(sid)
+            if data and (data.get("messages") or []):
+                self.session_id = data.get("id") or sid
+                self.conversation = list(data.get("messages") or [])
+                self._add_bubble("system", f"Sesión restaurada: {data.get('title') or sid}")
+                for m in self.conversation:
+                    role = m.get("role")
+                    content = m.get("content") or ""
+                    if role == "user":
+                        self._add_bubble("user", content)
+                    elif role == "assistant":
+                        self._add_bubble("ai", content)
+                self._scroll_chat_to_bottom()
+                return
+        self.session_id = sid or sessions_store.new_id()
+        user_prefs.set_current_session_id(self.session_id)
+        self._welcome()
+
     def _welcome(self) -> None:
-        """Mensaje inicial. Sin esto el chat abre como una caja negra vacia
-        y no se distingue de una app que no cargo."""
+        """Mensaje inicial."""
         self._add_bubble("system", "GSsmart Desktop AI")
         prov = getattr(self, "active_provider", None) or "ninguno"
         self._add_bubble(
             "system",
-            f"Proveedor: {prov}. Escribi abajo para chatear.\n"
-            "Cambia de proveedor arriba a la derecha. "
-            "Adjuntar · Modelo · Ver modelos · Testear conexiones.",
+            f"Proveedor: {prov}. Escribí abajo para chatear.\n"
+            "PROV (arriba) · Configuración (keys) · Guardar/Cargar sesión.",
         )
 
     # ------------------------------------------------------------------
@@ -917,6 +1095,7 @@ class App(ctk.CTk):
             except Exception:
                 pass
         self._scroll_chat_to_bottom()
+        self._autosave_session(silent=True)
         self._update_session_info()
 
     def _update_session_info(self):
@@ -924,11 +1103,107 @@ class App(ctk.CTk):
         self.footer_bar.set_status(session_lib.summarize(self.conversation))
 
     def new_session(self):
-        """Limpia la conversacion. El historial es memoria, no archivo."""
+        """Guarda la actual (si hay turnos) y abre una sesion nueva."""
+        self._autosave_session(silent=True)
         self.conversation.clear()
+        self.session_id = sessions_store.new_id()
+        user_prefs.set_current_session_id(self.session_id)
         self._clear_chat_area()
         self._welcome()
-        self._append_chat("[Sistema] Nueva sesion. Contexto reiniciado.")
+        self._append_chat("[Sistema] Nueva sesión. Contexto reiniciado.")
+
+    def save_current_session(self) -> None:
+        sid = self._autosave_session(silent=False)
+        if sid:
+            self._append_chat(f"[Sistema] Sesión guardada: {sid}")
+        else:
+            self._append_chat("[Sistema] Nada que guardar (sin mensajes user/assistant).")
+
+    def _autosave_session(self, silent: bool = True) -> Optional[str]:
+        usable = [
+            m for m in self.conversation
+            if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip()
+        ]
+        if not usable:
+            return None
+        sid = self.session_id or sessions_store.new_id()
+        self.session_id = sessions_store.save(
+            sid, self.conversation,
+            provider=getattr(self, "active_provider", None),
+        )
+        user_prefs.set_current_session_id(self.session_id)
+        return self.session_id
+
+    def load_session_dialog(self) -> None:
+        rows = sessions_store.list_sessions(limit=30)
+        win = ctk.CTkToplevel(self)
+        win.title("Sesiones guardadas")
+        win.geometry("480x420")
+        win.configure(fg_color=COLORS["panel"])
+        win.transient(self)
+        win.grid_columnconfigure(0, weight=1)
+        win.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            win, text="Sesiones", font=(FONT_MONO, FS["md"], "bold"),
+            text_color=COLORS["cyan"],
+        ).grid(row=0, column=0, sticky="w", padx=SPACE[4], pady=SPACE[3])
+
+        lst = ctk.CTkScrollableFrame(win, fg_color=COLORS["bg"])
+        lst.grid(row=1, column=0, sticky="nsew", padx=SPACE[3], pady=SPACE[2])
+        lst.grid_columnconfigure(0, weight=1)
+
+        if not rows:
+            ctk.CTkLabel(
+                lst, text="No hay sesiones guardadas.",
+                font=(FONT_UI, FS["sm"]), text_color=COLORS["text_muted"],
+            ).grid(row=0, column=0, pady=SPACE[5])
+        for i, row in enumerate(rows):
+            title = row.get("title") or row.get("id")
+            meta = f"{row.get('n_messages', 0)} msgs · {row.get('provider') or '-'}"
+            frame = ctk.CTkFrame(
+                lst, fg_color=COLORS["panel_raised"], corner_radius=RADIUS_FIELD,
+            )
+            frame.grid(row=i, column=0, sticky="ew", pady=2, padx=2)
+            frame.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(
+                frame, text=title, font=(FONT_MONO, FS["sm"]),
+                text_color=COLORS["text"], anchor="w",
+            ).grid(row=0, column=0, sticky="w", padx=SPACE[2], pady=(SPACE[1], 0))
+            ctk.CTkLabel(
+                frame, text=meta, font=(FONT_MONO, FS["xs"]),
+                text_color=COLORS["text_dim"], anchor="w",
+            ).grid(row=1, column=0, sticky="w", padx=SPACE[2], pady=(0, SPACE[1]))
+            ctk.CTkButton(
+                frame, text="Abrir", width=70, height=28,
+                command=lambda sid=row["id"], w=win: self._open_session(sid, w),
+                **ghost_btn_kwargs(),
+            ).grid(row=0, column=1, rowspan=2, padx=SPACE[2])
+
+    def _open_session(self, session_id: str, win=None) -> None:
+        data = sessions_store.load(session_id)
+        if not data:
+            self._append_chat(f"[ERROR]: No se pudo cargar {session_id}")
+            return
+        self._autosave_session(silent=True)
+        self.session_id = data.get("id") or session_id
+        user_prefs.set_current_session_id(self.session_id)
+        self.conversation = list(data.get("messages") or [])
+        self._clear_chat_area()
+        self._add_bubble("system", f"Sesión: {data.get('title') or self.session_id}")
+        for m in self.conversation:
+            role = m.get("role")
+            content = m.get("content") or ""
+            if role == "user":
+                self._add_bubble("user", content)
+            elif role == "assistant":
+                self._add_bubble("ai", content)
+        if win is not None:
+            try:
+                win.destroy()
+            except Exception:
+                pass
+        self._scroll_chat_to_bottom()
 
     def _on_response_error(self, error, ai_bubble=None):
         self.footer_bar.set_busy(False)

@@ -9,29 +9,41 @@ compatible con el formato OpenAI).
 
 ```
 GSsmartDesktopFree/
-├── main.py                      # CLI de prueba
 ├── gui_main.py                  # GUI principal  <-- corré esta
-├── gui_cyberpunk.py             # GUI alternativa con telemetría
+├── gui_cyberpunk.py             # HUD opcional (telemetría)
+├── main.py                      # CLI de prueba
 ├── requirements.txt
 ├── .env.example
-├── .gitignore
+├── sessions/                    # Chats guardados (local, gitignored)
 ├── tests/
-│   ├── run_all.py               # Corre todos los tests
-│   ├── test_stream_parser.py    # Parser de streaming (keepalive, choices vacio)
-│   ├── test_file_context.py     # Archivos adjuntos (binarios, truncado)
-│   ├── test_config.py           # Registro de proveedores
-│   └── test_smoke_gui.py        # Instancia las GUIs (detecta callbacks rotos)
-├── legacy/                      # Interfaces viejas, NO son producto
+├── legacy/                      # GUIs viejas, NO son producto
 └── src/
     ├── core/
-    │   ├── config.py            # Registro de proveedores (carga .env)
-    │   ├── router.py            # Router con fallback + streaming
-    │   └── file_context.py      # Lee adjuntos para mandarlos al prompt
-    └── providers/
-        ├── base_provider.py     # Contrato + parser de streaming compartido
-        ├── openrouter_provider.py
-        └── custom_provider.py   # Cualquier API compatible OpenAI
+    │   ├── config.py            # Registro de proveedores + apply en caliente
+    │   ├── router.py            # Router + streaming
+    │   ├── session.py           # Historial en memoria (OpenAI format)
+    │   ├── sessions_store.py    # Persistencia de chats en disco
+    │   ├── prefs.py             # Preferencias UI (proveedor activo, sesión)
+    │   ├── model_catalog.py     # Catálogo + set_env_var (.env)
+    │   └── file_context.py      # Adjuntos → texto para el prompt
+    ├── providers/
+    └── ui/
+        ├── theme.py             # Tokens cyberpunk
+        └── bubbles.py
 ```
+
+## Cómo usar
+
+```bash
+cp .env.example .env   # o editar keys desde Configuración en la app
+pip install -r requirements.txt
+python gui_main.py
+```
+
+- **PROV** (arriba): elige proveedor.
+- **Configuración** (sidebar): edita `base_url`, `api_key` y `model` → se guardan en `.env` y aplican en caliente.
+- **Guardar / Cargar sesión**: chats en `sessions/`.
+- **Ver modelos**: catálogo en vivo del proveedor.
 
 ## Tests
 

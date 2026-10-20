@@ -16,6 +16,7 @@ PREFS_PATH = _ROOT / ".gssmart_prefs.json"
 
 _DEFAULTS: Dict[str, Any] = {
     "active_provider": None,  # None = primero configurado
+    "current_session_id": None,
 }
 
 
@@ -50,4 +51,15 @@ def get_active_provider() -> Optional[str]:
 def set_active_provider(name: Optional[str]) -> None:
     data = load()
     data["active_provider"] = name
+    save(data)
+
+
+def get_current_session_id() -> Optional[str]:
+    val = load().get("current_session_id")
+    return val if isinstance(val, str) and val.strip() else None
+
+
+def set_current_session_id(session_id: Optional[str]) -> None:
+    data = load()
+    data["current_session_id"] = session_id
     save(data)

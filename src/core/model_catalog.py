@@ -196,57 +196,67 @@ async def probar(provider, modelo: str, timeout: Optional[float] = None) -> Dict
     }
 
 
-def set_model_in_env(variable: str, valor: str, env_path=None) -> tuple:
-    """Escribe una variable en el .env del proyecto. Devuelve (ok, detalle).
+def set_env_var(variable: str, valor: str, env_path=None, create_if_missing: bool = True) -> tuple:
+    """Escribe (o crea) una variable en el .env. Devuelve (ok, detalle).
 
-    Existe porque hardcodear el modelo en .env a mano se rompe: hay que
-    editar el archivo mientras la app corre, y esa edicion tiene dos
-    trampas que ya costaron tiempo (medido oct-2026):
-
-      1. Escribir con PowerShell Out-File mete un BOM UTF-8 y a veces
-         deja un byte invalido. El parser de dotenv deja de VER la
-         linea entera: el sintoma es "configurado pero sin api_key".
-      2. Reemplazar con regex sobre el texto falla si el archivo tiene
-         CRLF, y el cambio no se aplica sin avisar.
-
-    Aca se lee y escribe en utf-8 explicito, sin BOM, preservando los
-    saltos de linea que ya tenia, y se verifica que la variable exista.
-    Si no existe, no se la agrega a ciegas.
+    - UTF-8 sin BOM (PowerShell Out-File rompia dotenv).
+    - Preserva CRLF/LF del archivo.
+    - Si la variable no existe y create_if_missing=True, la agrega al final.
+    - Si el .env no existe, lo crea a partir de .env.example si hay.
     """
     from pathlib import Path
 
     if env_path is None:
         env_path = Path(__file__).resolve().parent.parent.parent / ".env"
     env_path = Path(env_path)
+    root = env_path.parent
 
     if not env_path.exists():
-        return False, f"no existe {env_path}"
+        example = root / ".env.example"
+        try:
+            if example.exists():
+                env_path.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
+            else:
+                env_path.write_text("# GSsmart Desktop .env\n", encoding="utf-8")
+        except OSError as e:
+            return False, f"no se pudo crear .env: {e}"
 
     try:
         texto = env_path.read_text(encoding="utf-8")
     except UnicodeDecodeError as e:
         return False, f"el .env tiene bytes invalidos: {e}"
 
+    # Valor en una sola linea: nada de saltos que rompan el parser.
+    valor_limpio = (valor or "").replace("\r", "").replace("\n", "").strip()
     patron = re.compile(rf"^{re.escape(variable)}\s*=.*$", re.M)
-    if not patron.search(texto):
+    if patron.search(texto):
+        nuevo = patron.sub(f"{variable}={valor_limpio}", texto, count=1)
+    elif create_if_missing:
+        sep = "" if (not texto or texto.endswith("\n") or texto.endswith("\r\n")) else "\n"
+        nuevo = texto + sep + f"{variable}={valor_limpio}\n"
+    else:
         return False, f"{variable} no existe en .env; agregala a mano"
 
-    nuevo = patron.sub(f"{variable}={valor}", texto, count=1)
-
     try:
-        # utf-8 sin BOM; newline="" preserva los CRLF que ya tenia.
         with open(env_path, "w", encoding="utf-8", newline="") as fh:
             fh.write(nuevo)
     except OSError as e:
         return False, f"no se pudo escribir: {e}"
 
-    # Verificar que quedo bien: un cambio silencioso no aplicado es
-    # peor que un error explicito.
     try:
         check = env_path.read_text(encoding="utf-8")
     except UnicodeDecodeError as e:
         return False, f"el .env quedo corrupto: {e}"
-    if f"{variable}={valor}" not in check:
+    if f"{variable}={valor_limpio}" not in check:
         return False, "la escritura no se aplico"
 
-    return True, f"{variable}={valor}"
+    return True, f"{variable}={valor_limpio}"
+
+
+def set_model_in_env(variable: str, valor: str, env_path=None) -> tuple:
+    """Compat: escribe el modelo en .env.
+
+    No crea variables nuevas a ciegas (comportamiento historico de tests).
+    Para upsert (Settings UI) usá set_env_var(..., create_if_missing=True).
+    """
+    return set_env_var(variable, valor, env_path=env_path, create_if_missing=False)

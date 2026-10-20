@@ -45,6 +45,8 @@ PROVIDERS: Dict[str, dict] = {
         "base_url": os.getenv("OMNIROUTE_BASE_URL", "http://localhost:20128/v1"),
         "model": os.getenv("OMNIROUTE_MODEL", "auto/coding:free"),
         "model_env": "OMNIROUTE_MODEL",
+        "api_key_env": "OMNIROUTE_API_KEY",
+        "base_url_env": "OMNIROUTE_BASE_URL",
     },
     # OpenAI directo. OJO: sin OPENAI_API_KEY real esto da 401 garantizado,
     # porque el default del base_url es api.openai.com. Si no la tenes,
@@ -55,6 +57,8 @@ PROVIDERS: Dict[str, dict] = {
         "base_url": os.getenv("OPENAI_BASE_URL", ""),
         "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         "model_env": "OPENAI_MODEL",
+        "api_key_env": "OPENAI_API_KEY",
+        "base_url_env": "OPENAI_BASE_URL",
     },
     "OpenRouter": {
         "class": OpenRouterProvider,
@@ -62,6 +66,8 @@ PROVIDERS: Dict[str, dict] = {
         "base_url": os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
         "model": os.getenv("OPENROUTER_MODEL", "mistralai/mistral-7b-instruct:free"),
         "model_env": "OPENROUTER_MODEL",
+        "api_key_env": "OPENROUTER_API_KEY",
+        "base_url_env": "OPENROUTER_BASE_URL",
     },
     "Custom (compatible OpenAI)": {
         "class": CustomProvider,
@@ -69,6 +75,8 @@ PROVIDERS: Dict[str, dict] = {
         "base_url": os.getenv("CUSTOM_BASE_URL", ""),
         "model": os.getenv("CUSTOM_MODEL", "local-model"),
         "model_env": "CUSTOM_MODEL",
+        "api_key_env": "CUSTOM_API_KEY",
+        "base_url_env": "CUSTOM_BASE_URL",
     },
     # Kimi / Moonshot. API key PROPIA (platform.kimi.com), sin proxy: es la
     # unica forma limpia de usar esto. OJO: la cuenta necesita saldo; con 0
@@ -80,6 +88,8 @@ PROVIDERS: Dict[str, dict] = {
         "base_url": os.getenv("KIMI_BASE_URL", "https://api.moonshot.ai/v1"),
         "model": os.getenv("KIMI_MODEL", "kimi-k2.7-code"),
         "model_env": "KIMI_MODEL",
+        "api_key_env": "KIMI_API_KEY",
+        "base_url_env": "KIMI_BASE_URL",
     },
     # Modelos locales (LM Studio / Ollama / vLLM). Sin key ni saldo.
     # Es la unica via que no depende de que alguien te de acceso.
@@ -89,6 +99,8 @@ PROVIDERS: Dict[str, dict] = {
         "base_url": os.getenv("LOCAL_BASE_URL", "http://localhost:1234/v1"),
         "model": os.getenv("LOCAL_MODEL", "qwen2.5-coder-1.5b-instruct"),
         "model_env": "LOCAL_MODEL",
+        "api_key_env": "LOCAL_API_KEY",
+        "base_url_env": "LOCAL_BASE_URL",
     },
 }
 
@@ -130,6 +142,48 @@ VIDEO_PROVIDERS: Dict[str, dict] = {
 }
 
 
+
+
+
+
+def api_key_env_for(name: str) -> str:
+    return (PROVIDERS.get(name) or {}).get("api_key_env") or ""
+
+
+def base_url_env_for(name: str) -> str:
+    return (PROVIDERS.get(name) or {}).get("base_url_env") or ""
+
+
+def apply_provider_runtime(name: str, *, api_key=None, base_url=None, model=None) -> None:
+    """Actualiza PROVIDERS + os.environ en caliente (sin reiniciar)."""
+    if name not in PROVIDERS:
+        return
+    cfg = PROVIDERS[name]
+    if api_key is not None:
+        cfg["api_key"] = api_key
+        env = cfg.get("api_key_env")
+        if env:
+            os.environ[env] = api_key
+    if base_url is not None:
+        cfg["base_url"] = base_url
+        env = cfg.get("base_url_env")
+        if env:
+            os.environ[env] = base_url
+    if model is not None:
+        cfg["model"] = model
+        env = cfg.get("model_env")
+        if env:
+            os.environ[env] = model
+
+
+def mask_secret(value: str, keep: int = 4) -> str:
+    """Muestra solo los ultimos keep chars. No loguea el valor completo."""
+    v = (value or "").strip()
+    if not v:
+        return ""
+    if len(v) <= keep:
+        return "*" * len(v)
+    return ("*" * max(8, len(v) - keep)) + v[-keep:]
 
 
 def model_env_for(name: str) -> str:
