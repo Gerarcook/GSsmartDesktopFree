@@ -11,6 +11,8 @@ from typing import List, Dict, Optional
 from src.core.file_context import build_file_context, describe_files
 from src.core import session as session_lib
 from src.core import model_catalog
+from src.core import config as app_config
+from src.core import prefs as user_prefs
 from src.core.model_catalog import set_model_in_env
 from src.ui.theme import (
     COLORS, FONT_MONO, FONT_UI, RADIUS_PANEL, RADIUS_FIELD, RADIUS_PILL,
@@ -499,13 +501,48 @@ class App(ctk.CTk):
             self.top_bar, text="Mostrar Revisión", width=150, height=32,
             command=self.toggle_revision, **ghost_btn_kwargs(),
         )
-        self.top_review_btn.grid(row=0, column=5, sticky="e", padx=(0, SPACE[4]))
+        self.top_review_btn.grid(row=0, column=5, sticky="e", padx=(0, SPACE[2]))
+
+        # Selector de proveedor (persistido en .gssmart_prefs.json)
+        prov_wrap = ctk.CTkFrame(self.top_bar, fg_color="transparent")
+        prov_wrap.grid(row=0, column=6, sticky="e", padx=(0, SPACE[4]))
+        ctk.CTkLabel(
+            prov_wrap, text="PROV", font=(FONT_MONO, FS["xs"], "bold"),
+            text_color=COLORS["text_dim"],
+        ).pack(side="left", padx=(0, SPACE[1]))
+
+        self._provider_names = app_config.configured_providers()
+        if not self._provider_names:
+            self._provider_names = ["(sin proveedores)"]
+
+        preferred = user_prefs.get_active_provider()
+        self.active_provider = app_config.resolve_active_provider(preferred)
+        if self.active_provider is None:
+            self.active_provider = self._provider_names[0]
+
+        self.provider_menu = ctk.CTkOptionMenu(
+            prov_wrap,
+            values=self._provider_names,
+            width=160, height=28,
+            font=(FONT_MONO, FS["xs"]),
+            fg_color=COLORS["panel_raised"],
+            button_color=COLORS["cyan_dim"],
+            button_hover_color=COLORS["cyan_mid"],
+            dropdown_fg_color=COLORS["panel"],
+            dropdown_hover_color=COLORS["cyan_dim"],
+            text_color=COLORS["text"],
+            command=self._on_provider_change,
+        )
+        self.provider_menu.pack(side="left")
+        if self.active_provider in self._provider_names:
+            self.provider_menu.set(self.active_provider)
 
         # La arranca al final: self.after(0, ...) garantiza que el Canvas ya
         # tiene tamano cuando corre el primer frame. Si se llama directo, el
         # primer dibujado sale con width=1 y la onda aparece chueca un rato.
         self.after(0, self._animate_voice)
         self.after(10, self._welcome)
+        self.after(20, self._refresh_provider_label)
 
     # --- Lógica de Interacción ---
 
@@ -527,7 +564,27 @@ class App(ctk.CTk):
     def toggle_audio(self):
         print("Audio toggled")
 
+    def _on_provider_change(self, name: str) -> None:
+        """Usuario eligio proveedor en el menu. Persiste y actualiza label."""
+        if name == "(sin proveedores)":
+            return
+        self.active_provider = name
+        user_prefs.set_active_provider(name)
+        self._refresh_provider_label()
+        self._append_chat(f"[Sistema] Proveedor activo: {name}")
 
+    def _refresh_provider_label(self) -> None:
+        """Muestra el modelo del proveedor activo en el status del footer."""
+        name = getattr(self, "active_provider", None)
+        if not name or name == "(sin proveedores)":
+            return
+        try:
+            cfg = app_config.get_provider_config(name)
+            modelo = cfg.get("model") or "?"
+        except Exception:
+            modelo = "?"
+        if hasattr(self, "footer_bar"):
+            self.footer_bar.set_status(f"{name} · {modelo}")
 
     def _add_bubble(self, sender: str, text: str) -> MessageBubble:
         """Agrega una burbuja al chat y la devuelve (para append en streaming).
@@ -589,11 +646,12 @@ class App(ctk.CTk):
         """Mensaje inicial. Sin esto el chat abre como una caja negra vacia
         y no se distingue de una app que no cargo."""
         self._add_bubble("system", "GSsmart Desktop AI")
+        prov = getattr(self, "active_provider", None) or "ninguno"
         self._add_bubble(
             "system",
-            "Conectado. Escribi abajo para hablar con el proveedor activo.\n"
-            "Adjunta archivos con Adjuntar, cambia de modelo con Modelo o "
-            "proba uno con Ver modelos.",
+            f"Proveedor: {prov}. Escribi abajo para chatear.\n"
+            "Cambia de proveedor arriba a la derecha. "
+            "Adjuntar · Modelo · Ver modelos · Testear conexiones.",
         )
 
     # ------------------------------------------------------------------
@@ -697,61 +755,72 @@ class App(ctk.CTk):
         self._append_chat(f"[Tú]: {text}")
         self.footer_bar.entry.delete(0, "end")
 
-        # La llamada real tarda 5-226s segun el proveedor. Si la llamo
-        # directo, Tkinter se congela ese tiempo. Va en un hilo aparte y
-        # vuelve al hilo principal por after(), que es el unico seguro.
+        # Burbuja vacia de IA: el worker la llena token a token (streaming).
+        # Se crea en el hilo de Tk, nunca desde el worker.
+        ai_bubble = self._add_bubble("ai", "…")
+
         self.footer_bar.set_busy(True)
         self.set_voice_active(True)
+        provider = self.active_provider
+        if provider == "(sin proveedores)":
+            provider = None
         threading.Thread(
-            target=self._ask_worker, args=(text, archivos), daemon=True
+            target=self._ask_worker,
+            args=(text, archivos, ai_bubble, provider),
+            daemon=True,
         ).start()
 
-    def _ask_worker(self, text, archivos):
-        """Hilo secundario: arma el contexto y consume el stream. NO toca widgets.
+    def _ask_worker(self, text, archivos, ai_bubble, provider):
+        """Hilo secundario: stream al proveedor. NO toca widgets (solo after).
 
-        Usa generate_stream() y no get_ai_response() por dos razones:
-          1. El no-streaming da 504 con estos gateways (medido: 100% de fallas).
-          2. El streaming deja ver el razonamiento en vivo. Con hcnsec/auto
-             el modelo emite ~1250 chars de reasoning ANTES de la respuesta;
-             sin esto el usuario mira un chat congelado durante 40s.
-
-        build_file_context() puede leer cientos de KB y tardar, por eso va
-        aca y no en el hilo de la interfaz.
+        Streaming en vivo: cada chunk de content se append a la burbuja.
+        Reasoning va al status bar (no al chat).
         """
         partes = []
+        first_content = True
         try:
             contexto = build_file_context(archivos)
-            # Copia el historial: el worker corre en otro hilo y la GUI
-            # puede seguir agregando mensajes mientras espera. El [:-1]
-            # saca el user que acabamos de agregar, porque ese ya viaja
-            # como prompt.
             historial = session_lib.build_history(self.conversation[:-1])
             router = ProviderRouter()
             try:
                 async def _consumir():
+                    nonlocal first_content
                     async for kind, piece in router.generate_stream(
-                        text, file_context=contexto or None, history=historial or None
+                        text,
+                        provider=provider,
+                        file_context=contexto or None,
+                        history=historial or None,
                     ):
                         if kind == "content":
                             partes.append(piece)
+                            # Limpia el placeholder "…" en el primer token.
+                            if first_content:
+                                first_content = False
+                                self.after(0, ai_bubble.set_text, piece)
+                            else:
+                                self.after(0, ai_bubble.append, piece)
+                            self.after(0, self._scroll_chat_to_bottom)
                         else:
-                            # Va como indicador, no a la respuesta.
                             self.after(0, self._on_reasoning, piece)
                     return "".join(partes).strip()
 
                 respuesta = asyncio.run(_consumir())
             finally:
-                asyncio.run(router.close_all())
+                try:
+                    asyncio.run(router.close_all())
+                except Exception:
+                    pass
 
             if respuesta:
-                self.after(0, self._on_response, respuesta)
+                self.after(0, self._on_response, respuesta, ai_bubble)
             else:
                 self.after(
                     0, self._on_response_error,
                     "El proveedor no devolvio contenido (puede ser rate-limit).",
+                    ai_bubble,
                 )
         except Exception as e:
-            self.after(0, self._on_response_error, str(e))
+            self.after(0, self._on_response_error, str(e), ai_bubble)
 
     def _on_reasoning(self, texto):
         """Muestra que el modelo esta pensando, sin ensuciar el chat."""
@@ -759,12 +828,19 @@ class App(ctk.CTk):
         if limpio:
             self.footer_bar.set_status(f"pensando: {limpio[-70:]}")
 
-    def _on_response(self, response):
+    def _on_response(self, response, ai_bubble=None):
         self.footer_bar.set_busy(False)
-        self.footer_bar.set_status("")
         self.set_voice_active(False)
         session_lib.add_assistant(self.conversation, response)
-        self._append_chat(f"[IA]: {response}")
+        # La burbuja ya tiene el texto del stream; solo asegúrate del final.
+        if ai_bubble is not None and getattr(ai_bubble, "winfo_exists", lambda: False)():
+            try:
+                if (ai_bubble.text or "").strip() in ("", "…"):
+                    ai_bubble.set_text(response)
+                elif ai_bubble.text != response:
+                    ai_bubble.set_text(response)
+            except Exception:
+                pass
         self._update_session_info()
 
     def _update_session_info(self):
@@ -778,11 +854,20 @@ class App(ctk.CTk):
         self._welcome()
         self._append_chat("[Sistema] Nueva sesion. Contexto reiniciado.")
 
-    def _on_response_error(self, error):
+    def _on_response_error(self, error, ai_bubble=None):
         self.footer_bar.set_busy(False)
-        self.footer_bar.set_status("")
         self.set_voice_active(False)
+        if ai_bubble is not None:
+            try:
+                if ai_bubble.winfo_exists():
+                    # Reemplaza la burbuja vacia por una de error
+                    ai_bubble.destroy()
+                    if ai_bubble in self.editor_area.bubbles:
+                        self.editor_area.bubbles.remove(ai_bubble)
+            except Exception:
+                pass
         self._append_chat(f"[ERROR]: {error}")
+        self._refresh_provider_label()
 
     # ------------------------------------------------------------------
     # DIAGNOSTICO DE PROVEEDORES
@@ -1009,7 +1094,9 @@ class App(ctk.CTk):
             finally:
                 await router.close_all()
 
-        self._probe_provider = getattr(self, "_probe_provider", None) or "OmniRoute"
+        self._probe_provider = getattr(self, "active_provider", None) or "OmniRoute"
+        if self._probe_provider == "(sin proveedores)":
+            self._probe_provider = "OmniRoute"
         try:
             res = asyncio.run(_run())
         except Exception as e:
@@ -1030,8 +1117,10 @@ class App(ctk.CTk):
             return
 
         modelo = self._selected_model
+        prov = getattr(self, "active_provider", None) or "OmniRoute"
+        env_var = app_config.model_env_for(prov) or "OMNIROUTE_MODEL"
         try:
-            ok, detalle = set_model_in_env("OMNIROUTE_MODEL", modelo)
+            ok, detalle = set_model_in_env(env_var, modelo)
         except Exception as e:
             self._set_model_status(f"No se pudo escribir .env: {e}")
             return
@@ -1044,11 +1133,17 @@ class App(ctk.CTk):
             pass
 
         if ok:
+            # Aplica en caliente: el router se re-instancia en cada mensaje
+            # y lee PROVIDERS + os.environ.
+            import os
+            os.environ[env_var] = modelo
+            if prov in app_config.PROVIDERS:
+                app_config.PROVIDERS[prov]["model"] = modelo
             self._append_chat(
-                f"[Sistema] OMNIROUTE_MODEL = {modelo}\n"
-                "Cerrá y abrí la app para que tome el cambio. "
-                "Mientras tanto sigue usando el modelo anterior."
+                f"[Sistema] {env_var} = {modelo}\n"
+                "Modelo activo actualizado (sin reiniciar)."
             )
+            self._refresh_provider_label()
         else:
             self._append_chat(f"[Sistema] No se pudo guardar: {detalle}")
 

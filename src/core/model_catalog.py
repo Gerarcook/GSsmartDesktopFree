@@ -162,6 +162,10 @@ async def probar(provider, modelo: str, timeout: Optional[float] = None) -> Dict
     razon_chars = 0
     modelo_real = None
 
+    # Sin esto el provider sigue con el modelo del .env y "probar X" miente.
+    if hasattr(provider, "model"):
+        provider.model = modelo
+
     try:
         agen = provider.generate_stream("di ok", max_tokens=16)
         async for kind, piece in agen:

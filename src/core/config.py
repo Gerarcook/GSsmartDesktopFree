@@ -10,7 +10,7 @@ El programa va a poder usarlo al instante, sin tocar nada mas.
 """
 
 import os
-from typing import Dict, Type
+from typing import Dict, Optional, Type
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -44,6 +44,7 @@ PROVIDERS: Dict[str, dict] = {
         "api_key": os.getenv("OMNIROUTE_API_KEY", ""),
         "base_url": os.getenv("OMNIROUTE_BASE_URL", "http://localhost:20128/v1"),
         "model": os.getenv("OMNIROUTE_MODEL", "auto/coding:free"),
+        "model_env": "OMNIROUTE_MODEL",
     },
     # OpenAI directo. OJO: sin OPENAI_API_KEY real esto da 401 garantizado,
     # porque el default del base_url es api.openai.com. Si no la tenes,
@@ -53,18 +54,21 @@ PROVIDERS: Dict[str, dict] = {
         "api_key": os.getenv("OPENAI_API_KEY", ""),
         "base_url": os.getenv("OPENAI_BASE_URL", ""),
         "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        "model_env": "OPENAI_MODEL",
     },
     "OpenRouter": {
         "class": OpenRouterProvider,
         "api_key": os.getenv("OPENROUTER_API_KEY", ""),
         "base_url": os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
         "model": os.getenv("OPENROUTER_MODEL", "mistralai/mistral-7b-instruct:free"),
+        "model_env": "OPENROUTER_MODEL",
     },
     "Custom (compatible OpenAI)": {
         "class": CustomProvider,
         "api_key": os.getenv("CUSTOM_API_KEY", ""),
         "base_url": os.getenv("CUSTOM_BASE_URL", ""),
         "model": os.getenv("CUSTOM_MODEL", "local-model"),
+        "model_env": "CUSTOM_MODEL",
     },
     # Kimi / Moonshot. API key PROPIA (platform.kimi.com), sin proxy: es la
     # unica forma limpia de usar esto. OJO: la cuenta necesita saldo; con 0
@@ -75,6 +79,7 @@ PROVIDERS: Dict[str, dict] = {
         "api_key": os.getenv("KIMI_API_KEY", ""),
         "base_url": os.getenv("KIMI_BASE_URL", "https://api.moonshot.ai/v1"),
         "model": os.getenv("KIMI_MODEL", "kimi-k2.7-code"),
+        "model_env": "KIMI_MODEL",
     },
     # Modelos locales (LM Studio / Ollama / vLLM). Sin key ni saldo.
     # Es la unica via que no depende de que alguien te de acceso.
@@ -83,6 +88,7 @@ PROVIDERS: Dict[str, dict] = {
         "api_key": os.getenv("LOCAL_API_KEY", ""),
         "base_url": os.getenv("LOCAL_BASE_URL", "http://localhost:1234/v1"),
         "model": os.getenv("LOCAL_MODEL", "qwen2.5-coder-1.5b-instruct"),
+        "model_env": "LOCAL_MODEL",
     },
 }
 
@@ -122,6 +128,24 @@ VIDEO_PROVIDERS: Dict[str, dict] = {
         "model": os.getenv("ARK_MODEL", "seedance-1-0-pro-250528"),
     },
 }
+
+
+
+
+def model_env_for(name: str) -> str:
+    """Variable de .env que guarda el modelo de este proveedor."""
+    cfg = PROVIDERS.get(name) or {}
+    return cfg.get("model_env") or ""
+
+
+def resolve_active_provider(preferred: Optional[str] = None) -> Optional[str]:
+    """Elige el proveedor a usar: preferred si esta configurado, si no el primero listo."""
+    listos = configured_providers()
+    if not listos:
+        return None
+    if preferred and preferred in listos:
+        return preferred
+    return listos[0]
 
 
 def get_provider_class(name: str) -> Type[BaseProvider]:
